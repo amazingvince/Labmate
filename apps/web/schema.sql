@@ -1,9 +1,11 @@
 -- Labmate evidence ledger (Cloudflare D1 / SQLite).
 -- Apply with: npx wrangler d1 execute labmate --file=./schema.sql
+-- (the Worker also self-applies this same file on first request — see src/worker.js).
+--
 -- This is the heart of the product: not just metrics, but what the agent believed,
 -- why it acted, what evidence changed its mind, and what the human corrected.
-
-PRAGMA foreign_keys = ON;
+--
+-- Every statement is idempotent (IF NOT EXISTS) so applying it repeatedly is safe.
 
 CREATE TABLE IF NOT EXISTS study (
   id              TEXT PRIMARY KEY,           -- study_<ulid>
@@ -14,6 +16,7 @@ CREATE TABLE IF NOT EXISTS study (
   target          TEXT NOT NULL,
   metric          TEXT NOT NULL,
   metric_rationale TEXT,
+  constraints_json TEXT,                      -- { primary_metric, guardrails[], banned_columns[], require_interpretability }
   budget_json     TEXT,                       -- { max_trials, budget_seconds }
   rubric          TEXT DEFAULT 'docs/rubric.json',
   status          TEXT DEFAULT 'open',        -- open | done | stopped
@@ -21,13 +24,14 @@ CREATE TABLE IF NOT EXISTS study (
 );
 
 CREATE TABLE IF NOT EXISTS dataset_version (
-  id              TEXT PRIMARY KEY,
+  id              TEXT PRIMARY KEY,           -- ds_<ulid>
   study_id        TEXT NOT NULL REFERENCES study(id),
   file_hash       TEXT NOT NULL,
   row_count       INTEGER,
-  schema_json     TEXT,
+  columns_json    TEXT,                       -- [{ name, dtype, missing_fraction, n_unique, is_candidate_leakage, leakage_reason }]
   target_definition TEXT,
   split_strategy  TEXT,                       -- 'time_based' | 'stratified'
+  split_json      TEXT,                       -- { strategy, time_col, ratios, seed }
   seed            INTEGER,
   leakage_candidates_json TEXT,               -- ["resolved_at", ...]
   banned_columns_json     TEXT,
@@ -47,14 +51,26 @@ CREATE TABLE IF NOT EXISTS hypothesis (
 );
 
 CREATE TABLE IF NOT EXISTS experiment_manifest (
-  id              TEXT PRIMARY KEY,
-  hypothesis_id   TEXT NOT NULL REFERENCES hypothesis(id),
+  id              TEXT PRIMARY KEY,           -- man_<ulid>
+  study_id        TEXT REFERENCES study(id),
+  hypothesis_id   TEXT REFERENCES hypothesis(id),
   model_family    TEXT,
   features_json   TEXT,
   preprocessing_json TEXT,
   search_space_json  TEXT,
+  manifest_json   TEXT,                       -- the full manifest handed to the runner
   seed            INTEGER,
-  applied_feedback_id TEXT,                    -- which human feedback shaped this manifest
+  applied_feedback_id TEXT,                   -- which human feedback shaped this manifest
+  created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approval (
+  id              TEXT PRIMARY KEY,           -- appr_<ulid>
+  study_id        TEXT NOT NULL REFERENCES study(id),
+  experiment_ids_json TEXT,
+  reason          TEXT,
+  estimated_cost_seconds INTEGER,
+  status          TEXT DEFAULT 'pending',     -- pending | approved | rejected
   created_at      TEXT NOT NULL
 );
 
@@ -63,8 +79,9 @@ CREATE TABLE IF NOT EXISTS run (
   study_id        TEXT NOT NULL REFERENCES study(id),
   hypothesis_id   TEXT REFERENCES hypothesis(id),
   manifest_id     TEXT REFERENCES experiment_manifest(id),
-  tracker_run_id  TEXT,                       -- trackio run id
+  tracker_run_id  TEXT,                       -- tracker run id
   status          TEXT DEFAULT 'queued',      -- queued | running | completed | failed
+  model_family    TEXT,                       -- denormalized for query_runs filtering
   metrics_json    TEXT,
   params_json     TEXT,
   artifacts_json  TEXT,
@@ -108,13 +125,26 @@ CREATE TABLE IF NOT EXISTS decision (
 );
 
 CREATE TABLE IF NOT EXISTS feedback (
-  id              TEXT PRIMARY KEY,
+  id              TEXT PRIMARY KEY,           -- fb_<ulid>
   study_id        TEXT NOT NULL REFERENCES study(id),
-  target_id       TEXT,                       -- study | hypothesis | run
+  target_id       TEXT,                       -- study | hypothesis | run | approval id
   type            TEXT,                       -- 'approval' | 'ban_feature' | 'change_metric' | 'increase_budget' | 'focus_segment' | 'note'
-  scope           TEXT,
+  scope           TEXT,                       -- study | hypothesis | run | experiment
   content         TEXT,
   parsed_constraints_json TEXT,
+  created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS artifact (
+  id              TEXT PRIMARY KEY,           -- art_<ulid>
+  study_id        TEXT NOT NULL REFERENCES study(id),
+  run_id          TEXT REFERENCES run(id),
+  kind            TEXT,                       -- 'report' | 'plot' | 'model' | 'confusion_matrix'
+  uri             TEXT,                       -- R2 object key
+  dataset_hash    TEXT,
+  code_hash       TEXT,
+  seed            INTEGER,
+  meta_json       TEXT,                       -- e.g. { best_run_id, baseline_run_id, compares_best_to_baseline, reproducible_command }
   created_at      TEXT NOT NULL
 );
 
@@ -130,7 +160,14 @@ CREATE TABLE IF NOT EXISTS memory (
 CREATE INDEX IF NOT EXISTS idx_run_study   ON run(study_id);
 CREATE INDEX IF NOT EXISTS idx_run_hyp     ON run(hypothesis_id);
 CREATE INDEX IF NOT EXISTS idx_run_status  ON run(status);
+CREATE INDEX IF NOT EXISTS idx_run_family  ON run(model_family);
 CREATE INDEX IF NOT EXISTS idx_crit_study  ON critique(study_id);
 CREATE INDEX IF NOT EXISTS idx_crit_kind   ON critique(kind);
+CREATE INDEX IF NOT EXISTS idx_crit_run    ON critique(target_run_id);
 CREATE INDEX IF NOT EXISTS idx_fb_study    ON feedback(study_id);
+CREATE INDEX IF NOT EXISTS idx_fb_type     ON feedback(type);
 CREATE INDEX IF NOT EXISTS idx_hyp_study   ON hypothesis(study_id);
+CREATE INDEX IF NOT EXISTS idx_ds_study    ON dataset_version(study_id);
+CREATE INDEX IF NOT EXISTS idx_art_study   ON artifact(study_id);
+CREATE INDEX IF NOT EXISTS idx_man_study   ON experiment_manifest(study_id);
+CREATE INDEX IF NOT EXISTS idx_appr_study  ON approval(study_id);

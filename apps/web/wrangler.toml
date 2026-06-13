@@ -3,13 +3,21 @@ main = "src/worker.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# ---- D1 (studies, hypotheses, runs, feedback, critiques, decisions) ----
+# schema.sql is imported as a Text module so the Worker can self-apply the ledger
+# schema on first request (in addition to `wrangler d1 execute --file=./schema.sql`).
+[[rules]]
+type = "Text"
+globs = ["**/*.sql"]
+fallthrough = true
+
+# ---- D1 (studies, hypotheses, runs, feedback, critiques, decisions, artifacts) ----
 # Create with: npx wrangler d1 create labmate
 # then paste the printed database_id here AND into .env (CLOUDFLARE_D1_DATABASE_ID).
+# The placeholder below is fine for `wrangler dev` (local mode keys storage by binding).
 [[d1_databases]]
 binding = "DB"
 database_name = "labmate"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "00000000-0000-0000-0000-000000000000"
 
 # ---- R2 (artifacts, reports, model files) ----
 # Create with: npx wrangler r2 bucket create labmate-artifacts
@@ -27,6 +35,8 @@ tag = "v1"
 new_classes = ["StudySession"]
 
 # ---- Vars / secrets ----
-# Set the secret with: npx wrangler secret put LABMATE_INTERNAL_TOKEN
+# LABMATE_INTERNAL_TOKEN is a secret: set with `npx wrangler secret put LABMATE_INTERNAL_TOKEN`
+# (or apps/web/.dev.vars locally). MODAL_RUNNER_URL is the deployed runner endpoint.
 [vars]
 LABMATE_ENV = "dev"
+MODAL_RUNNER_URL = ""

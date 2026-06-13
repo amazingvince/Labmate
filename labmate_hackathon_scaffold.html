@@ -1,0 +1,1662 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Labmate Hackathon Deliverables Scaffold</title>
+  <meta name="description" content="A polished hackathon planning scaffold for Labmate: deliverables, rubric, timeline, demo script, and Claude prompt cards." />
+  <style>
+    :root {
+      --bg: #0b1020;
+      --bg-2: #10172a;
+      --panel: rgba(255,255,255,.075);
+      --panel-2: rgba(255,255,255,.11);
+      --text: #f8fafc;
+      --muted: #cbd5e1;
+      --soft: #94a3b8;
+      --line: rgba(255,255,255,.14);
+      --accent: #b6f09c;
+      --accent-2: #87e8de;
+      --accent-3: #c4b5fd;
+      --warning: #fbbf24;
+      --danger: #fb7185;
+      --good: #86efac;
+      --shadow: 0 24px 80px rgba(0,0,0,.35);
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      font-family: var(--sans);
+      background:
+        radial-gradient(circle at top left, rgba(135,232,222,.22), transparent 34rem),
+        radial-gradient(circle at 75% 5%, rgba(196,181,253,.22), transparent 28rem),
+        radial-gradient(circle at 20% 60%, rgba(182,240,156,.12), transparent 28rem),
+        linear-gradient(135deg, var(--bg), #111827 48%, #050816);
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    code, pre {
+      font-family: var(--mono);
+    }
+
+    .page-shell {
+      width: min(1440px, calc(100% - 36px));
+      margin: 0 auto;
+      padding: 22px 0 72px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin: 0 -18px 22px;
+      padding: 14px 18px;
+      backdrop-filter: blur(20px);
+      background: rgba(11,16,32,.72);
+      border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(135deg, rgba(182,240,156,.98), rgba(135,232,222,.96));
+      color: #07111d;
+      font-weight: 900;
+      letter-spacing: -.08em;
+      box-shadow: 0 18px 42px rgba(135,232,222,.18);
+      flex: 0 0 auto;
+    }
+
+    .brand-title {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.1;
+      min-width: 0;
+    }
+
+    .brand-title strong {
+      font-size: 15px;
+      letter-spacing: .01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .brand-title span {
+      color: var(--soft);
+      font-size: 12px;
+      margin-top: 3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .btn {
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(255,255,255,.08);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 9px 13px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: .18s ease;
+      box-shadow: 0 10px 28px rgba(0,0,0,.12);
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(182,240,156,.45);
+      background: rgba(255,255,255,.13);
+    }
+
+    .btn.primary {
+      background: linear-gradient(135deg, rgba(182,240,156,.95), rgba(135,232,222,.92));
+      color: #07111d;
+      border-color: transparent;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 22px;
+      align-items: start;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 92px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: rgba(255,255,255,.07);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--shadow);
+      padding: 16px;
+      max-height: calc(100vh - 112px);
+      overflow: auto;
+    }
+
+    .sidebar h2 {
+      font-size: 12px;
+      margin: 4px 4px 12px;
+      text-transform: uppercase;
+      letter-spacing: .14em;
+      color: var(--soft);
+    }
+
+    .nav {
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav a {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 11px;
+      border-radius: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      border: 1px solid transparent;
+      transition: .16s ease;
+    }
+
+    .nav a:hover {
+      color: var(--text);
+      border-color: rgba(255,255,255,.12);
+      background: rgba(255,255,255,.08);
+    }
+
+    .nav .tag {
+      color: var(--bg);
+      background: var(--accent);
+      font-weight: 900;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      flex: 0 0 auto;
+    }
+
+    .main {
+      min-width: 0;
+      display: grid;
+      gap: 22px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.16);
+      border-radius: calc(var(--radius-xl) + 8px);
+      padding: clamp(26px, 4vw, 54px);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.045)),
+        radial-gradient(circle at 84% 18%, rgba(182,240,156,.25), transparent 20rem);
+      box-shadow: var(--shadow);
+      isolation: isolate;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -10% -50% 35%;
+      height: 270px;
+      background:
+        radial-gradient(circle, rgba(135,232,222,.22), transparent 68%);
+      transform: rotate(-8deg);
+      z-index: -1;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: #07111d;
+      background: rgba(182,240,156,.96);
+      border-radius: 999px;
+      padding: 7px 11px;
+      font-weight: 900;
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }
+
+    .hero h1 {
+      max-width: 940px;
+      margin: 0;
+      font-size: clamp(42px, 7vw, 94px);
+      line-height: .88;
+      letter-spacing: -.075em;
+    }
+
+    .gradient-text {
+      background: linear-gradient(135deg, #ffffff, #dfffd5 42%, #9ff5ec);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .hero-copy {
+      max-width: 820px;
+      margin: 24px 0 0;
+      color: var(--muted);
+      font-size: clamp(17px, 2vw, 22px);
+      line-height: 1.55;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 28px;
+    }
+
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 30px;
+    }
+
+    .stat {
+      padding: 15px;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(0,0,0,.18);
+      border-radius: 18px;
+    }
+
+    .stat b {
+      display: block;
+      font-size: 25px;
+      color: var(--accent);
+      letter-spacing: -.04em;
+    }
+
+    .stat span {
+      display: block;
+      color: var(--soft);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .section {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: rgba(255,255,255,.07);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .section-inner {
+      padding: clamp(20px, 3vw, 32px);
+    }
+
+    .section-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 22px;
+    }
+
+    .section-title {
+      min-width: 0;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: clamp(25px, 3vw, 42px);
+      letter-spacing: -.045em;
+      line-height: 1.02;
+    }
+
+    .section-title p {
+      max-width: 790px;
+      margin: 10px 0 0;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 15px;
+    }
+
+    .pill {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(255,255,255,.08);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 8px 11px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0,1fr));
+      gap: 14px;
+    }
+
+    .card {
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: var(--radius-lg);
+      background: rgba(255,255,255,.065);
+      padding: 18px;
+    }
+
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      letter-spacing: -.02em;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 14px;
+    }
+
+    .card .big {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 34px;
+      font-weight: 950;
+      letter-spacing: -.055em;
+      color: var(--accent-2);
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+    }
+
+    .callout {
+      border: 1px solid rgba(182,240,156,.28);
+      background: linear-gradient(135deg, rgba(182,240,156,.10), rgba(135,232,222,.055));
+      border-radius: var(--radius-lg);
+      padding: 18px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .callout strong {
+      color: var(--text);
+    }
+
+    .callout.warning {
+      border-color: rgba(251,191,36,.32);
+      background: linear-gradient(135deg, rgba(251,191,36,.12), rgba(251,113,133,.055));
+    }
+
+    .rubric {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .rubric-item {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(255,255,255,.07);
+      border-radius: var(--radius-lg);
+      padding: 18px;
+      min-height: 190px;
+    }
+
+    .rubric-item::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto;
+      height: 5px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
+    }
+
+    .rubric-item b {
+      display: block;
+      font-size: 30px;
+      color: var(--accent);
+      letter-spacing: -.05em;
+      margin-bottom: 10px;
+    }
+
+    .rubric-item h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+
+    .rubric-item p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .checklist {
+      display: grid;
+      gap: 10px;
+    }
+
+    .check {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      border: 1px solid rgba(255,255,255,.13);
+      background: rgba(0,0,0,.16);
+      border-radius: 16px;
+      padding: 13px 14px;
+    }
+
+    .check input {
+      width: 20px;
+      height: 20px;
+      accent-color: #b6f09c;
+      margin-top: 1px;
+      cursor: pointer;
+    }
+
+    .check label {
+      cursor: pointer;
+      min-width: 0;
+    }
+
+    .check strong {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 3px;
+    }
+
+    .check span {
+      display: block;
+      color: var(--soft);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .check .prio {
+      color: #07111d;
+      background: var(--accent);
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 10px;
+      font-weight: 950;
+      white-space: nowrap;
+      align-self: center;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 12px;
+      position: relative;
+    }
+
+    .slot {
+      display: grid;
+      grid-template-columns: 115px minmax(0, 1fr);
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .time {
+      border: 1px solid rgba(255,255,255,.13);
+      background: rgba(0,0,0,.18);
+      border-radius: 16px;
+      padding: 13px 12px;
+      color: var(--accent-2);
+      font-weight: 950;
+      text-align: center;
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+
+    .slot-body {
+      border: 1px solid rgba(255,255,255,.13);
+      background: rgba(255,255,255,.065);
+      border-radius: 16px;
+      padding: 14px 16px;
+    }
+
+    .slot-body h3 {
+      margin: 0 0 5px;
+      font-size: 16px;
+    }
+
+    .slot-body p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 14px;
+    }
+
+    .prompt-grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .prompt-card {
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: var(--radius-lg);
+      background: rgba(0,0,0,.18);
+      overflow: hidden;
+    }
+
+    .prompt-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(255,255,255,.11);
+      background: rgba(255,255,255,.06);
+    }
+
+    .prompt-head h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .prompt-head span {
+      color: var(--soft);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    pre {
+      margin: 0;
+      padding: 16px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #e5e7eb;
+      font-size: 13px;
+      line-height: 1.55;
+      overflow: auto;
+    }
+
+    .copy-btn {
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(255,255,255,.08);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 850;
+      cursor: pointer;
+    }
+
+    .copy-btn:hover {
+      background: rgba(255,255,255,.14);
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: var(--radius-lg);
+      background: rgba(0,0,0,.16);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+    }
+
+    th, td {
+      padding: 13px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.1);
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    th {
+      color: var(--accent);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .09em;
+      background: rgba(255,255,255,.06);
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    td {
+      color: var(--muted);
+    }
+
+    td strong {
+      color: var(--text);
+    }
+
+    .kicker-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0,1fr));
+      gap: 12px;
+    }
+
+    .mini {
+      border: 1px solid rgba(255,255,255,.13);
+      background: rgba(255,255,255,.06);
+      border-radius: 16px;
+      padding: 14px;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 14px;
+    }
+
+    .mini strong {
+      display: block;
+      color: var(--text);
+      margin-bottom: 5px;
+    }
+
+    .footer {
+      text-align: center;
+      color: var(--soft);
+      padding: 18px 0 0;
+      font-size: 13px;
+    }
+
+    .print-note {
+      display: none;
+    }
+
+    @media (max-width: 1100px) {
+      .grid { grid-template-columns: 1fr; }
+      .sidebar {
+        position: static;
+        max-height: none;
+      }
+      .nav {
+        grid-template-columns: repeat(2, minmax(0,1fr));
+      }
+      .stat-row, .rubric {
+        grid-template-columns: repeat(2, minmax(0,1fr));
+      }
+      .cards {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .page-shell {
+        width: min(100% - 24px, 1440px);
+      }
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .top-actions {
+        width: 100%;
+        justify-content: flex-start;
+      }
+      .nav,
+      .stat-row,
+      .rubric,
+      .two-col,
+      .kicker-list {
+        grid-template-columns: 1fr;
+      }
+      .section-header {
+        flex-direction: column;
+      }
+      .slot {
+        grid-template-columns: 1fr;
+      }
+      .check {
+        grid-template-columns: 28px minmax(0, 1fr);
+      }
+      .check .prio {
+        grid-column: 2;
+        justify-self: start;
+      }
+    }
+
+    @media print {
+      body {
+        color: #0f172a;
+        background: #fff;
+      }
+      .topbar, .sidebar, .copy-btn, .hero-actions {
+        display: none !important;
+      }
+      .page-shell {
+        width: 100%;
+        padding: 0;
+      }
+      .grid {
+        display: block;
+      }
+      .hero, .section, .card, .callout, .rubric-item, .check, .slot-body, .time, .prompt-card, .mini, .table-wrap {
+        background: #fff !important;
+        color: #0f172a !important;
+        box-shadow: none !important;
+        border-color: #cbd5e1 !important;
+      }
+      .hero h1, .gradient-text, .section-title h2, .card h3, .check strong, .slot-body h3, .mini strong {
+        color: #0f172a !important;
+        -webkit-text-fill-color: #0f172a !important;
+      }
+      .hero-copy, .section-title p, .card p, .check span, .slot-body p, td, .mini, pre {
+        color: #334155 !important;
+      }
+      .section {
+        break-inside: avoid;
+        margin-bottom: 18px;
+      }
+      .print-note {
+        display: block;
+        margin: 12px 0 0;
+        color: #334155;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page-shell">
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Labmate scaffold home">
+        <div class="brand-mark">Lm</div>
+        <div class="brand-title">
+          <strong>Labmate Build Day Scaffold</strong>
+          <span>Deliverables · prompts · demo flow · judging proof</span>
+        </div>
+      </a>
+      <div class="top-actions">
+        <button class="btn" onclick="window.print()">Print / Save PDF</button>
+        <button class="btn" onclick="resetChecks()">Reset checks</button>
+        <a class="btn primary" href="#claude-prompts">Go to chat prompts</a>
+      </div>
+    </header>
+
+    <div class="grid">
+      <aside class="sidebar">
+        <h2>Navigation</h2>
+        <nav class="nav">
+          <a href="#mission">Mission <span class="tag">why</span></a>
+          <a href="#rubric">Rubric Map <span class="tag">score</span></a>
+          <a href="#deliverables">P0 Deliverables <span class="tag">ship</span></a>
+          <a href="#implementation">Implementation <span class="tag">build</span></a>
+          <a href="#timeline">Build Schedule <span class="tag">time</span></a>
+          <a href="#demo">Demo Script <span class="tag">pitch</span></a>
+          <a href="#claude-prompts">Claude Prompts <span class="tag">paste</span></a>
+          <a href="#submission">Submission Copy <span class="tag">copy</span></a>
+          <a href="#cut-list">Cut List <span class="tag">focus</span></a>
+          <a href="#final-check">Final Check <span class="tag">done</span></a>
+        </nav>
+      </aside>
+
+      <main class="main" id="top">
+        <section class="hero">
+          <div class="eyebrow">Claude Build Day · Labmate</div>
+          <h1><span class="gradient-text">Agent-native data science,</span><br />with evidence.</h1>
+          <p class="hero-copy">
+            A pretty, paste-ready scaffold for shipping Labmate: a harness where Claude profiles data,
+            proposes experiments, runs sandboxed training jobs, critiques its own methodology, records
+            human feedback, and produces a reproducible model card.
+          </p>
+          <div class="hero-actions">
+            <a class="btn primary" href="#deliverables">Start from deliverables</a>
+            <a class="btn" href="#claude-prompts">Open prompt cards</a>
+            <a class="btn" href="#demo">Review demo flow</a>
+          </div>
+          <div class="stat-row" aria-label="Judging criteria summary">
+            <div class="stat"><b>35%</b><span>Impact: real workflow compression</span></div>
+            <div class="stat"><b>35%</b><span>Demo: live golden path holds up</span></div>
+            <div class="stat"><b>15%</b><span>Opus use: planning, critique, verification</span></div>
+            <div class="stat"><b>15%</b><span>Orchestration: repeatable done state</span></div>
+          </div>
+          <p class="print-note">Generated as a single-file scaffold for Labmate hackathon planning.</p>
+        </section>
+
+        <section class="section" id="mission">
+          <div class="section-inner">
+            <div class="section-header">
+              <div class="section-title">
+                <h2>The winning version</h2>
+                <p>
+                  Keep the submission narrow and verifiable. Ship one deterministic golden path rather than a broad product.
+                </p>
+              </div>
+              <span class="pill">Core narrative</span>
+            </div>
+
+            <div class="callout">
+              <strong>Labmate lets a data scientist give Claude a business prediction problem, dataset, target,
+              metric, and rubric.</strong> Claude profiles the data, catches leakage, proposes experiment cards,
+              waits for human approval, runs sandboxed experiments, critiques its own results, reruns a corrected
+              experiment, and produces a reproducible model card. The live app shows the full evidence ledger.
+            </div>
+
+            <div class="two-col" style="margin-top:14px">
+              <div class="card">
+                <h3>What to emphasize</h3>
+                <p>
+                  The impressive part is not that Claude trains a model. The impressive part is that Claude knows
+                  when not to trust its own result, rejects it, reruns it correctly, and leaves behind a reproducible
+                  evidence trail.
+                </p>
+              </div>
+              <div class="callout warning">
+                <strong>Framing warning:</strong> do not call this a dashboard. The rules prohibit projects where a
+                dashboard is the main feature. Call the UI a <strong>mission-control cockpit</strong> for an autonomous
+                scientific loop. The product is the <strong>agent-native evidence ledger</strong>.
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="rubric">
+          <div class="section-inner">
+            <div class="section-header">
+              <div class="section-title">
+                <h2>Judging rubric map</h2>
+                <p>Every screen and artifact should prove one of these scoring categories.</p>
+              </div>
+              <span class="pill">Optimize for judges</span>
+            </div>
+
+            <div class="rubric">
+              <div class="rubric-item">
+                <b>35%</b>
+                <h3>Impact</h3>
+                <p>Compress a back-office data science workflow from days or weeks into a guided, auditable agent loop.</p>
+              </div>
+              <div class="rubric-item">
+                <b>35%</b>
+                <h3>Demo</h3>
+                <p>Live cockpit shows study → experiments → runs → critique → rerun → report. Make the self-correction obvious.</p>
+              </div>
+              <div class="rubric-item">
+                <b>15%</b>
+                <h3>Opus 4.8 Use</h3>
+                <p>Claude plans experiments, applies skills, critiques methodology, uses feedback, and verifies done.</p>
+              </div>
+              <div class="rubric-item">
+                <b>15%</b>
+                <h3>Orchestration</h3>
+                <p>Brief, rubric, workflow scripts, tests, grader, responding URL, and repeatable session log.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="deliverables">
+          <div class="section-inner">
+            <div class="section-header">
+              <div class="section-title">
+                <h2>P0 deliverables by 5:00 PM</h2>
+                <p>Use the checklist while building. Checks persist in your browser via local storage.</p>
+              </div>
+              <span class="pill">Ship list</span>
+            </div>
+
+            <div class="checklist">
+              <div class="check">
+                <input type="checkbox" id="d1" data-check />
+                <label for="d1"><strong>Public GitHub repo</strong><span>Contains every feature, code path, and artifact shown in the demo.</span></label>
+                <span class="prio">P0</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="d2" data-check />
+                <label for="d2"><strong>README.md</strong><span>Pitch, problem, user, live URL, demo command, architecture, and what was built during the hackathon.</span></label>
+                <span class="prio">P0</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="d3" data-check />
+                <label for="d3"><strong>Brief and rubric</strong><span><code>docs/BRIEF.md</code>, <code>docs/RUBRIC.md</code>, and <code>docs/rubric.json</code>.</span></label>
+                <span class="prio">P0</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="d4" data-check />
+                <label for="d4"><strong>Executable workflow</strong><span><code>.claude/workflows/run-study.js</code> creates the golden-path study from start to graded finish.</span></label>
+                <span class="prio">P0</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="d5" data-check />
+                <label for="d5"><strong>Live URL</strong><span>Shows one seeded Labmate study with brief, data contract, experiments, runs, critique, report, and grade result.</span></label>
+                <span class="prio">P0</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="d6" data-check />
+                <label for="d6"><strong>Golden path command</strong><span><code>npm run study</code> and <code>npm run grade -- --study &lt;study_id&gt;</code> both work.</span></label>
+                <span class="prio">P0</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="d7" data-check />
+                <label for="d7"><strong>1-minute demo video</strong><span>Shows only hackathon-built functionality, including Claude catching leakage or test-set tuning.</span></label>
+                <span class="prio">P0</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="d8" data-check />
+                <label for="d8"><strong>Session log</strong><span>Records initial brief, human steering, agent actions, self-correction moment, and verification commands.</span></label>
+                <span class="prio">P0</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="implementation">
+          <div class="section-inner">
+            <div class="section-header">
+              <div class="section-title">
+                <h2>Implementation priorities</h2>
+                <p>Build the minimum real system that proves the orchestration loop.</p>
+              </div>
+              <span class="pill">Code focus</span>
+            </div>
+
+            <div class="cards">
+              <div class="card">
+                <span class="big">A</span>
+                <h3>Control plane</h3>
+                <p>
+                  Implement Worker routes for studies, profile, experiment proposal, approval, launch, runs,
+                  feedback, reports, grading, and the cockpit view.
+                </p>
+              </div>
+              <div class="card">
+                <span class="big">B</span>
+                <h3>MCP tools</h3>
+                <p>
+                  Wire the MCP server so Claude steers the loop through semantic tools, not direct SQL.
+                </p>
+              </div>
+              <div class="card">
+                <span class="big">C</span>
+                <h3>Runner metrics</h3>
+                <p>
+                  Support dummy, logistic regression, random forest, and histogram gradient boosting with
+                  validation-based thresholding.
+                </p>
+              </div>
+              <div class="card">
+                <span class="big">D</span>
+                <h3>Workflow</h3>
+                <p>
+                  Make <code>run-study.js</code> run the golden path: profile → propose → approve → run →
+                  critique → rerun → report → grade.
+                </p>
+              </div>
+              <div class="card">
+                <span class="big">E</span>
+                <h3>Grader</h3>
+                <p>
+                  Implement explicit predicates keyed by check id. Avoid a generic DSL; simple checks are faster
+                  and safer.
+                </p>
+              </div>
+              <div class="card">
+                <span class="big">F</span>
+                <h3>Cockpit polish</h3>
+                <p>
+                  One clear page with the evidence ledger, human feedback, critique timeline, and final model card.
+                </p>
+              </div>
+            </div>
+
+            <div class="callout" style="margin-top:14px">
+              <strong>Database gap to fix:</strong> add an <code>artifact</code> table, because the rubric checks for
+              a generated report artifact and provenance. Include <code>study_id</code>, <code>run_id</code>,
+              <code>kind</code>, <code>uri</code>, <code>content</code>, <code>dataset_hash</code>, <code>code_hash</code>,
+              <code>seed</code>, and <code>created_at</code>.
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="timeline">
+          <div class="section-inner">
+            <div class="section-header">
+              <div class="section-title">
+                <h2>Build schedule</h2>
+                <p>Time-box for one excellent, deterministic, repeatable study.</p>
+              </div>
+              <span class="pill">10:30 → 5:00</span>
+            </div>
+
+            <div class="timeline">
+              <div class="slot">
+                <div class="time">10:30–11:15</div>
+                <div class="slot-body"><h3>Get the spine working</h3><p>D1 schema, create/read study routes, profile route, seeded data contract, simple cockpit renders a study.</p></div>
+              </div>
+              <div class="slot">
+                <div class="time">11:15–12:15</div>
+                <div class="slot-body"><h3>Runs and ledger</h3><p>MCP wrapper, runner returns metrics, launch route works, one completed experiment appears in the evidence ledger.</p></div>
+              </div>
+              <div class="slot">
+                <div class="time">12:15–1:00</div>
+                <div class="slot-body"><h3>Experiment cards and human checkpoint</h3><p>Generate 5–8 hypotheses, record approval, parse business feedback into constraints, apply feedback to a later manifest.</p></div>
+              </div>
+              <div class="slot">
+                <div class="time">1:00–2:15</div>
+                <div class="slot-body"><h3>Full golden path</h3><p>Baseline plus 5+ experiments, leakage critique, test-set-tuning critique, corrected rerun, and selected best model.</p></div>
+              </div>
+              <div class="slot">
+                <div class="time">2:15–3:00</div>
+                <div class="slot-body"><h3>Report and grader</h3><p>Generate model card, write provenance, implement grading checks, print <code>VERDICT: DONE ✅</code>.</p></div>
+              </div>
+              <div class="slot">
+                <div class="time">3:00–4:00</div>
+                <div class="slot-body"><h3>Cockpit polish and reliability</h3><p>Make the self-correction obvious and keep the UI clear, reliable, and non-dashboard framed.</p></div>
+              </div>
+              <div class="slot">
+                <div class="time">4:00–4:45</div>
+                <div class="slot-body"><h3>Record video and freeze</h3><p>Run guard, study, and grade. Record 60 seconds. Stop risky changes.</p></div>
+              </div>
+              <div class="slot">
+                <div class="time">4:45–5:00</div>
+                <div class="slot-body"><h3>Submit</h3><p>Public repo, live URL, one-minute video, brief, rubric, session log, and teammate list.</p></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="demo">
+          <div class="section-inner">
+            <div class="section-header">
+              <div class="section-title">
+                <h2>Demo script</h2>
+                <p>Use this for both the 1-minute video and finalist live demo.</p>
+              </div>
+              <span class="pill">Tell the story</span>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Show</th>
+                    <th>Say</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong>0–8s</strong></td>
+                    <td>Hero/cockpit screen</td>
+                    <td>“Data scientists lose time managing experiment mechanics; Labmate gives Claude a harness to run the scientific loop.”</td>
+                  </tr>
+                  <tr>
+                    <td><strong>8–18s</strong></td>
+                    <td>Goal, brief, rubric</td>
+                    <td>“This is what we gave Claude: a business goal, a dataset, and a machine-verifiable definition of done.”</td>
+                  </tr>
+                  <tr>
+                    <td><strong>18–30s</strong></td>
+                    <td>Data contract</td>
+                    <td>“Claude profiled the dataset and flagged post-outcome leakage before training.”</td>
+                  </tr>
+                  <tr>
+                    <td><strong>30–42s</strong></td>
+                    <td>Experiment cards + approval</td>
+                    <td>“The human steers business judgment; Claude turns that into structured constraints.”</td>
+                  </tr>
+                  <tr>
+                    <td><strong>42–52s</strong></td>
+                    <td>Runs + critique</td>
+                    <td>“The critic caught a flawed result and reran the corrected experiment instead of trusting itself.”</td>
+                  </tr>
+                  <tr>
+                    <td><strong>52–60s</strong></td>
+                    <td>Report + grader</td>
+                    <td>“Done is not vibes. The study is graded against the rubric and passes.”</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="callout" style="margin-top:14px">
+              <strong>Best demo line:</strong> “The impressive part is not that Claude trained a model. The impressive
+              part is that Claude knew when not to trust its own result, rejected it, reran it correctly, and left behind
+              a reproducible evidence trail.”
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="claude-prompts">
+          <div class="section-inner">
+            <div class="section-header">
+              <div class="section-title">
+                <h2>Paste-ready Claude chat scaffold</h2>
+                <p>Use these prompt cards to drive Claude Code or a chat session. Each card has a copy button.</p>
+              </div>
+              <span class="pill">Copy / paste</span>
+            </div>
+
+            <div class="prompt-grid">
+              <article class="prompt-card">
+                <div class="prompt-head">
+                  <div>
+                    <h3>1. Kickoff brief</h3>
+                    <span>Use first</span>
+                  </div>
+                  <button class="copy-btn" data-copy="prompt-1">Copy</button>
+                </div>
+                <pre id="prompt-1">You are helping me ship Labmate for Claude Build Day.
+
+Goal:
+Build an agent-native data science harness where Claude can profile a dataset, detect leakage, propose hypothesis-driven experiments, request human approval, run sandboxed model experiments, critique methodology, rerun corrected experiments, and generate a reproducible model card.
+
+Hackathon constraints:
+- Must be a public repo.
+- Must deploy to a live URL.
+- Must include a brief, rubric, workflow/session log, and one-minute demo video.
+- Do not frame this as a dashboard. Frame it as a mission-control cockpit for an autonomous scientific loop.
+- Optimize for the judging rubric: Impact 35%, Demo 35%, Opus use 15%, Orchestration 15%.
+
+Golden path:
+Use examples/sla_tickets as the deterministic study. The golden path must show:
+1. study created
+2. data contract written
+3. leakage fields detected and banned
+4. at least 5 experiment cards proposed
+5. human approval recorded
+6. human feedback affects a later manifest
+7. baseline plus at least 5 runs completed
+8. critic catches leakage or test-set tuning
+9. corrected rerun happens
+10. report/model card generated
+11. provenance recorded
+12. grader returns pass
+
+Before writing code, inspect the repo and produce:
+- the shortest implementation plan
+- the exact files to edit
+- the riskiest TODOs
+- a sequence of commits or tasks that gets us to a working demo fastest</pre>
+              </article>
+
+              <article class="prompt-card">
+                <div class="prompt-head">
+                  <div>
+                    <h3>2. Build the control plane</h3>
+                    <span>Worker + schema</span>
+                  </div>
+                  <button class="copy-btn" data-copy="prompt-2">Copy</button>
+                </div>
+                <pre id="prompt-2">Implement the minimum real control plane for Labmate.
+
+Focus files:
+- apps/web/src/worker.js
+- schema/migrations or wherever the D1 schema lives
+- any shared types/helpers required by the Worker
+
+Required routes:
+POST /api/studies
+GET  /api/studies/:id
+POST /api/profile
+POST /api/experiments/propose
+POST /api/approvals/request
+POST /api/experiments/launch
+POST /api/runs/query
+POST /api/feedback
+POST /api/reports
+POST /api/grade
+GET  /
+
+Requirements:
+- Use D1 tables for study, dataset version, hypotheses, manifests, runs, feedback, critiques, decisions, and artifacts.
+- Add an artifact table if missing.
+- The root HTML page should render a seeded cockpit view for a study: brief, rubric, data contract, leakage fields, experiment cards, human feedback, runs, critique timeline, final report, and grade result.
+- Keep the UI simple and reliable. No WebSockets. Polling or static rendering is fine.
+- Every route should return JSON with clear error messages.
+- Make it easy for the workflow script to call these routes.
+
+After implementing, show the commands to run migrations and smoke-test create/read/profile.</pre>
+              </article>
+
+              <article class="prompt-card">
+                <div class="prompt-head">
+                  <div>
+                    <h3>3. Implement the runner</h3>
+                    <span>Metrics + guardrails</span>
+                  </div>
+                  <button class="copy-btn" data-copy="prompt-3">Copy</button>
+                </div>
+                <pre id="prompt-3">Implement the Labmate experiment runner.
+
+Focus file:
+- apps/modal-runner/runner.py
+
+Required model families:
+- dummy
+- logistic_regression
+- random_forest
+- hist_gradient_boosting
+
+Required behavior:
+- deterministic split
+- fixed seed
+- respect banned/leaky columns
+- threshold tuned on validation only
+- final test evaluated once
+- reject any manifest that says tune_on: "test"
+- return clear status, metrics, params, artifacts, rationale, dataset_hash, code_hash, seed, and executor
+
+Required metrics:
+- recall_at_fpr
+- precision
+- roc_auc
+- pr_auc
+- false_positive_rate
+
+Golden demo:
+Create one intentionally flawed manifest that tunes on the test split, make the critic reject it, then rerun with validation thresholding.
+
+Do not add XGBoost, LightGBM, uploads, auth, or advanced search unless the golden path already works.</pre>
+              </article>
+
+              <article class="prompt-card">
+                <div class="prompt-head">
+                  <div>
+                    <h3>4. Wire MCP tools</h3>
+                    <span>Claude orchestration</span>
+                  </div>
+                  <button class="copy-btn" data-copy="prompt-4">Copy</button>
+                </div>
+                <pre id="prompt-4">Wire the MCP server so Claude can steer Labmate through semantic tools.
+
+Focus file:
+- apps/mcp-server/src/index.js
+
+Implement the api() helper as a thin wrapper around the Worker API.
+
+Expose or verify tools like:
+- create_study
+- profile_dataset
+- propose_experiments
+- request_approval
+- record_feedback
+- launch_experiment
+- query_runs
+- write_report
+- grade_study_against_rubric
+
+Requirements:
+- Tools should use the Worker API, not direct SQL.
+- Tool names should read like the scientific workflow.
+- Errors should be clear enough for Claude to self-correct.
+- Include at least one tool response that contains a rejected run or critique result, so the session log can show the agent caught and fixed a failure.</pre>
+              </article>
+
+              <article class="prompt-card">
+                <div class="prompt-head">
+                  <div>
+                    <h3>5. Make the workflow executable</h3>
+                    <span>Golden path</span>
+                  </div>
+                  <button class="copy-btn" data-copy="prompt-5">Copy</button>
+                </div>
+                <pre id="prompt-5">Make .claude/workflows/run-study.js execute the full Labmate golden path.
+
+Required sequence:
+1. read examples/sla_tickets/brief.md
+2. create study
+3. profile dataset
+4. write data contract and leakage exclusions
+5. propose 5–8 experiment cards
+6. request approval
+7. record approval
+8. record this human feedback:
+   "Recall matters more than precision, but false positives above 20% are not acceptable."
+9. ensure that feedback affects at least one later manifest
+10. launch baseline plus at least 5 model experiments
+11. create or trigger a critique that catches leakage or test-set tuning
+12. rerun the corrected experiment
+13. select best model
+14. write final report/model card
+15. grade the study against docs/rubric.json
+
+Output:
+- Print the study id.
+- Print the live study URL.
+- Print the grader verdict.
+- Write or append SESSION_LOG.md with the brief, human steering, agent actions, self-correction moment, and verification commands.
+
+Reliability requirement:
+This can be deterministic and tailored to examples/sla_tickets. Do not over-generalize.</pre>
+              </article>
+
+              <article class="prompt-card">
+                <div class="prompt-head">
+                  <div>
+                    <h3>6. Finish the grader</h3>
+                    <span>Done is verifiable</span>
+                  </div>
+                  <button class="copy-btn" data-copy="prompt-6">Copy</button>
+                </div>
+                <pre id="prompt-6">Finish scripts/grade_study.py.
+
+Implement explicit predicates keyed by check id from docs/rubric.json. Do not build a generic DSL evaluator.
+
+The grader should verify:
+- study_created
+- data_contract
+- leakage_exclusions
+- five_experiments
+- human_can_act
+- feedback_applied
+- baseline_exists
+- experiments_ran
+- runs_logged
+- critique_exists
+- corrected_rerun
+- best_model_selected
+- report_generated
+- provenance_recorded
+- compute_gated
+
+Output format:
+✅ check_id
+❌ check_id: reason
+
+At the end:
+VERDICT: DONE ✅
+or
+VERDICT: NOT DONE ❌
+
+Make the script useful for the live demo. It should be obvious to judges that the model can verify completion without a human.</pre>
+              </article>
+
+              <article class="prompt-card">
+                <div class="prompt-head">
+                  <div>
+                    <h3>7. Polish the cockpit</h3>
+                    <span>Non-dashboard framing</span>
+                  </div>
+                  <button class="copy-btn" data-copy="prompt-7">Copy</button>
+                </div>
+                <pre id="prompt-7">Polish the Labmate cockpit for demo clarity.
+
+Important framing:
+Do not call it a dashboard. It is a mission-control cockpit for an autonomous scientific loop.
+
+The single page should show:
+- the study brief
+- primary metric and guardrail
+- data contract
+- leakage fields detected and banned
+- experiment cards
+- approval event
+- human feedback
+- run table with at least 5 completed runs
+- critique timeline
+- corrected rerun
+- final recommendation
+- model card/report
+- grade result
+
+Add a visible self-correction badge:
+"Critic caught test-set tuning → reran with validation thresholding"
+
+Optimize for legibility on a projector and in a 1-minute video. Avoid anything complex, flaky, or slow.</pre>
+              </article>
+
+              <article class="prompt-card">
+                <div class="prompt-head">
+                  <div>
+                    <h3>8. Generate submission assets</h3>
+                    <span>Final packet</span>
+                  </div>
+                  <button class="copy-btn" data-copy="prompt-8">Copy</button>
+                </div>
+                <pre id="prompt-8">Prepare the final Claude Build Day submission assets for Labmate.
+
+Create or update:
+- README.md
+- docs/BRIEF.md
+- docs/RUBRIC.md
+- docs/rubric.json
+- docs/DEMO_SCRIPT.md
+- SESSION_LOG.md
+
+README must include:
+- one-sentence pitch
+- problem
+- who benefits
+- why now
+- live URL placeholder
+- demo command
+- architecture
+- what was built during the hackathon
+- how to rerun the golden path
+- how to run the grader
+
+SESSION_LOG.md must include:
+- initial brief
+- goal
+- human steering events
+- agent actions
+- self-correction moment
+- verification commands
+- final verdict
+
+Also produce:
+- a 60-second demo script
+- a 3-minute finalist demo outline
+- a submission form summary under 150 words</pre>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="submission">
+          <div class="section-inner">
+            <div class="section-header">
+              <div class="section-title">
+                <h2>Submission copy</h2>
+                <p>Use this language in the README, submission form, or demo narration.</p>
+              </div>
+              <span class="pill">Ready text</span>
+            </div>
+
+            <div class="prompt-card">
+              <div class="prompt-head">
+                <div>
+                  <h3>Submission summary</h3>
+                  <span>Copy into form</span>
+                </div>
+                <button class="copy-btn" data-copy="submission-copy">Copy</button>
+              </div>
+              <pre id="submission-copy">Project title:
+Labmate — an agent-native data science harness
+
+One-sentence pitch:
+Labmate gives Claude a safe, repeatable harness for autonomous data science: it profiles a dataset, proposes hypothesis-driven experiments, runs them in sandboxes, critiques its own methodology, records human feedback, and produces a reproducible model card.
+
+Problem:
+Data scientists spend too much time on experiment mechanics: profiling data, checking leakage, writing training scripts, logging runs, documenting rationale, and turning business feedback into modeling constraints. AutoML optimizes after the problem is framed; Labmate helps frame, run, critique, and document the scientific loop.
+
+What we built:
+We built a working Labmate study on a synthetic support-ticket SLA dataset. Claude creates a study, profiles the dataset, catches leakage fields, proposes experiment cards, waits for human approval, runs sandboxed experiments, records metrics and rationales in an evidence ledger, catches a test-set-tuning issue, reruns the corrected experiment, and writes a final model card. A grader verifies completion against a machine-readable rubric.
+
+Why it matters:
+This is the missing orchestration layer for agentic data science. It turns Claude from a coding assistant into a controlled scientific collaborator whose assumptions, actions, corrections, and evidence are logged and verifiable.</pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="cut-list">
+          <div class="section-inner">
+            <div class="section-header">
+              <div class="section-title">
+                <h2>Cut list</h2>
+                <p>Skip these unless the full golden path is already working and graded.</p>
+              </div>
+              <span class="pill">Ruthless focus</span>
+            </div>
+
+            <div class="kicker-list">
+              <div class="mini"><strong>Cut WebSockets</strong>Use reloads or polling. Reliability beats live streaming.</div>
+              <div class="mini"><strong>Cut beautiful dashboard polish</strong>The cockpit must be clear, not luxurious.</div>
+              <div class="mini"><strong>Cut upload flow</strong>One deterministic synthetic dataset is enough.</div>
+              <div class="mini"><strong>Cut auth and teams</strong>Submission judges only need the golden path.</div>
+              <div class="mini"><strong>Cut warehouse connectors</strong>Do not spend time on integrations.</div>
+              <div class="mini"><strong>Cut advanced models</strong>Skip XGBoost/LightGBM unless everything else is done.</div>
+              <div class="mini"><strong>Cut generalized arbitrary CSV support</strong>Tailor to <code>examples/sla_tickets</code>.</div>
+              <div class="mini"><strong>Cut generic DSL grader</strong>Explicit rubric predicates are faster and clearer.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="final-check">
+          <div class="section-inner">
+            <div class="section-header">
+              <div class="section-title">
+                <h2>Final verification</h2>
+                <p>Before submission, the repo, URL, video, and rubric proof should all line up.</p>
+              </div>
+              <span class="pill">5:00 PM ready</span>
+            </div>
+
+            <div class="two-col">
+              <div class="prompt-card">
+                <div class="prompt-head">
+                  <div>
+                    <h3>Commands to run</h3>
+                    <span>Terminal</span>
+                  </div>
+                  <button class="copy-btn" data-copy="commands">Copy</button>
+                </div>
+                <pre id="commands">npm run guard
+npm run study
+npm run grade -- --study &lt;study_id&gt;</pre>
+              </div>
+              <div class="callout">
+                <strong>Judge takeaway:</strong><br />
+                “This team didn’t just build an app with Claude. They built a repeatable harness where Claude can do
+                long-horizon work, verify itself, and correct its own mistakes.”
+              </div>
+            </div>
+
+            <div class="checklist" style="margin-top:14px">
+              <div class="check">
+                <input type="checkbox" id="f1" data-check />
+                <label for="f1"><strong>Repo is public</strong><span>All demoed code is in the repository.</span></label>
+                <span class="prio">FINAL</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="f2" data-check />
+                <label for="f2"><strong>Live URL loads on another machine</strong><span>No local-only paths or auth walls.</span></label>
+                <span class="prio">FINAL</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="f3" data-check />
+                <label for="f3"><strong>Video is exactly the golden path</strong><span>Shows leak/test-tuning critique and corrected rerun.</span></label>
+                <span class="prio">FINAL</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="f4" data-check />
+                <label for="f4"><strong>Brief, rubric, session log attached</strong><span>Judges can see the orchestration setup.</span></label>
+                <span class="prio">FINAL</span>
+              </div>
+              <div class="check">
+                <input type="checkbox" id="f5" data-check />
+                <label for="f5"><strong>Grader passes</strong><span><code>VERDICT: DONE ✅</code> appears in terminal or cockpit.</span></label>
+                <span class="prio">FINAL</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="footer">
+          Built as a single-file scaffold for Labmate’s Claude Build Day execution.
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const copyButtons = document.querySelectorAll("[data-copy]");
+    copyButtons.forEach((button) => {
+      button.addEventListener("click", async () => {
+        const id = button.getAttribute("data-copy");
+        const node = document.getElementById(id);
+        if (!node) return;
+        const text = node.innerText;
+        try {
+          await navigator.clipboard.writeText(text);
+          const old = button.textContent;
+          button.textContent = "Copied";
+          setTimeout(() => { button.textContent = old; }, 1100);
+        } catch (error) {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          const old = button.textContent;
+          button.textContent = "Selected";
+          setTimeout(() => { button.textContent = old; }, 1100);
+        }
+      });
+    });
+
+    const checks = document.querySelectorAll("[data-check]");
+    checks.forEach((check) => {
+      const saved = localStorage.getItem("labmate-check-" + check.id);
+      if (saved === "true") check.checked = true;
+      check.addEventListener("change", () => {
+        localStorage.setItem("labmate-check-" + check.id, check.checked ? "true" : "false");
+      });
+    });
+
+    function resetChecks() {
+      checks.forEach((check) => {
+        check.checked = false;
+        localStorage.removeItem("labmate-check-" + check.id);
+      });
+    }
+  </script>
+</body>
+</html>

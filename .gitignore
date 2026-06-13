@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+**/node_modules/
+
+# local secrets / env
+.env
+.dev.vars
+apps/web/.dev.vars
+
+# wrangler / miniflare local state
+.wrangler/
+**/.wrangler/
+**/.mf/
+**/.mf-*
+
+# build output
+**/dist/
+apps/api-spec/index.html
+
+# python
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# misc
+.DS_Store
+labmate-starter.zip

@@ -196,6 +196,7 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Hypothesis" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/approvals/request:
     post:
@@ -225,6 +226,7 @@ paths:
                 properties:
                   approval_id: { type: string }
                   status: { type: string, enum: [pending] }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/experiments/launch:
@@ -271,6 +273,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: The Modal runner is unreachable or MODAL_RUNNER_URL is not configured.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/runs/query:
     post:
@@ -301,6 +308,82 @@ paths:
                   runs:
                     type: array
                     items: { $ref: "#/components/schemas/Run" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/critiques:
+    post:
+      tags: [experiments]
+      operationId: recordCritique
+      summary: Record a critique (record_critique)
+      description: >
+        Persist a methodological critique of a run — leakage, test-set tuning, metric,
+        calibration, or robustness — with a finding, a recommendation, and the decision
+        it led to. This is how the experiment-critic writes evidence into the ledger; the
+        rubric's "caught an issue" and "leakage review before training" checks read it.
+        The id is server-assigned.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [study_id, kind, finding]
+              properties:
+                study_id: { type: string }
+                target_run_id: { type: string }
+                kind:
+                  type: string
+                  enum: [leakage, test_set_tuning, metric, calibration, robustness]
+                finding: { type: string }
+                recommendation: { type: string }
+                led_to_decision:
+                  type: string
+                  enum: [promote, reject, rerun, branch, stop]
+      responses:
+        "201":
+          description: Critique recorded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Critique" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/decisions:
+    post:
+      tags: [experiments]
+      operationId: recordDecision
+      summary: Record a decision (record_decision)
+      description: >
+        Persist a decision — promote, reject, rerun, branch, or stop — naming the run it
+        acted on and the reason. Every promote/reject in the loop is recorded so the
+        ledger captures what the agent (or human) decided and why. The id is server-assigned.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [study_id, action]
+              properties:
+                study_id: { type: string }
+                action:
+                  type: string
+                  enum: [promote, reject, rerun, branch, stop]
+                promoted_run_id: { type: string }
+                rejected_run_id: { type: string }
+                reason: { type: string }
+      responses:
+        "201":
+          description: Decision recorded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Decision" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/feedback:
@@ -332,6 +415,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Feedback" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/reports:
@@ -366,6 +450,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Report" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/grade:
     post:

@@ -1,0 +1,20 @@
+{
+  "$comment": "Labmate harness settings. Hard methodology enforcement lives in the Worker (launch_experiment returns 402 without an approval, 422 for banned columns or tune_on=test) and the fixed Modal runner. These hooks are advisory reminders only — they never block — so they are safe to run in any session.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/compute-guard.mjs" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/grade-reminder.mjs" }
+        ]
+      }
+    ]
+  }
+}
