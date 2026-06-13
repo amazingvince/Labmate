@@ -4,10 +4,18 @@
   "title": "ExperimentManifest",
   "description": "A reproducible, sandboxed experiment spec. Claude builds this from an approved hypothesis card; the Modal runner executes it. No arbitrary code.",
   "type": "object",
-  "required": ["study_id", "hypothesis_id", "dataset_uri", "target", "task_type", "split", "features", "model", "metric"],
+  "required": ["study_id", "hypothesis_id", "dataset_uri", "target", "task_type", "split", "features"],
+  "oneOf": [
+    { "required": ["script"], "title": "Agent-authored script run in a Modal Sandbox" },
+    { "required": ["model", "metric"], "title": "Fixed-runner manifest" }
+  ],
   "properties": {
     "study_id": { "type": "string" },
     "hypothesis_id": { "type": "string" },
+    "script": { "type": "string",
+                "description": "Agent-authored Python: reads /work/data.csv, splits first, tunes on validation only, writes /work/result.json := {metrics, params, artifacts}. Runs in a network-isolated Modal Sandbox. Use script XOR model/metric." },
+    "tune_on": { "type": "string", "enum": ["validation"], "default": "validation",
+                 "description": "Tuning split for the script path; 'test' is forbidden." },
     "dataset_uri": { "type": "string", "description": "Where the runner pulls the CSV (R2 key or public URL)." },
     "target": { "type": "string" },
     "task_type": { "type": "string", "enum": ["binary_classification", "regression"] },
@@ -31,7 +39,8 @@
       "properties": {
         "family": { "type": "string",
                     "enum": ["dummy", "logistic_regression", "linear_regression",
-                             "random_forest", "hist_gradient_boosting", "xgboost", "lightgbm"] },
+                             "random_forest", "gradient_boosting", "hist_gradient_boosting",
+                             "xgboost", "lightgbm"] },
         "params": { "type": "object" }
       }
     },

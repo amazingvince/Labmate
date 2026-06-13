@@ -411,7 +411,7 @@ export interface components {
         };
         ModelSpec: {
             /** @enum {string} */
-            family: "dummy" | "logistic_regression" | "linear_regression" | "random_forest" | "hist_gradient_boosting" | "xgboost" | "lightgbm";
+            family: "dummy" | "logistic_regression" | "linear_regression" | "random_forest" | "gradient_boosting" | "hist_gradient_boosting" | "xgboost" | "lightgbm";
             params?: {
                 [key: string]: unknown;
             };
@@ -443,6 +443,7 @@ export interface components {
             primary: string;
             max_fpr?: number;
         };
+        /** @description An experiment to run in the Modal sandbox. Two mutually exclusive modes (script XOR model): supply `script` — an agent-authored Python training program the network-isolated Modal Sandbox runs — OR `model` + `metric` for the legacy manifest→sklearn path. `study_id`, `hypothesis_id`, `dataset_uri`, `target`, `task_type`, `split`, and `features` are required in both modes. */
         ExperimentManifest: {
             study_id: string;
             hypothesis_id: string;
@@ -455,9 +456,17 @@ export interface components {
             /** @description MUST exclude banned/leaky columns. */
             features: string[];
             banned_columns?: string[];
-            model: components["schemas"]["ModelSpec"];
+            /** @description Agent-authored, self-contained Python training code. Reads the CSV at /work/data.csv, makes the deterministic split FIRST using split.seed, trains, tunes on validation only (never test), evaluates on test once, and writes /work/result.json := {metrics, params, artifacts}. Runs in a network-isolated Modal Sandbox; pandas/numpy/scikit-learn are installed. Provided INSTEAD of model/metric (script XOR model). */
+            script?: string;
+            /**
+             * @description Where the script tunes thresholds/hyperparameters. Tuning on 'test' is forbidden and rejected. Honored on the script path (the legacy path uses search.tune_on).
+             * @default validation
+             * @enum {string}
+             */
+            tune_on: "validation";
+            model?: components["schemas"]["ModelSpec"];
             search?: components["schemas"]["SearchSpec"];
-            metric: components["schemas"]["MetricSpec"];
+            metric?: components["schemas"]["MetricSpec"];
             /** @description Human feedback id whose parsed constraint shaped this manifest. */
             applied_feedback_id?: string;
             /**
@@ -466,7 +475,7 @@ export interface components {
              *     ]
              */
             tags?: string[];
-        };
+        } & (unknown | unknown);
         Run: {
             id: string;
             study_id: string;

@@ -76,9 +76,16 @@ export const LABMATE_TOOLS = [
   {
     name: "launch_experiment",
     description:
-      "Run ONE experiment in the Modal sandbox from a manifest. Requires an " +
-      "approval id. The runner rejects manifests with banned columns in features " +
-      "or tune_on=test. Returns the run id with metrics once complete.",
+      "Run ONE experiment by submitting a Python training SCRIPT to a network-isolated " +
+      "Modal Sandbox (the only executor — no code runs on your own host). Requires an " +
+      "approval id. Write a self-contained Python script that reads the CSV at " +
+      "/work/data.csv, does a deterministic split FIRST using the declared seed, " +
+      "trains, tunes ONLY on validation, evaluates on test once, and writes " +
+      "/work/result.json := {metrics:{recall_at_fpr, precision, false_positive_rate, " +
+      "roc_auc, pr_auc, ...}, params:{...}, artifacts:{...}}. pandas/numpy/scikit-learn " +
+      "are installed; the sandbox has NO network. Exclude banned/leaky columns from " +
+      "features. The runner rejects scripts whose declared features include a banned " +
+      "column or whose tune_on=test. Returns the run id with metrics once complete.",
     input_schema: {
       type: "object",
       properties: {
@@ -86,12 +93,40 @@ export const LABMATE_TOOLS = [
         manifest: {
           type: "object",
           description:
-            "Conforms to packages/schemas/experiment_manifest.schema.json " +
-            "(study_id, hypothesis_id, dataset_uri, target, task_type, split, " +
-            "features, model, search, metric).",
+            "The experiment to run as an agent-authored script. The script reads " +
+            "/work/data.csv and writes /work/result.json with metrics/params/artifacts.",
+          properties: {
+            study_id: { type: "string" },
+            hypothesis_id: { type: "string" },
+            script: {
+              type: "string",
+              description:
+                "Self-contained Python. Reads /work/data.csv, splits deterministically " +
+                "with the declared seed FIRST, trains, tunes on validation only, " +
+                "evaluates on test once, and writes /work/result.json.",
+            },
+            features: {
+              type: "array",
+              items: { type: "string" },
+              description: "The columns the script uses; MUST exclude banned/leaky columns.",
+            },
+            split: {
+              type: "object",
+              properties: {
+                strategy: { type: "string" },
+                time_col: { type: "string" },
+                ratios: { type: "array", items: { type: "number" } },
+                seed: { type: "integer" },
+              },
+              required: ["seed"],
+            },
+            tune_on: { type: "string", default: "validation" },
+            tags: { type: "array", items: { type: "string" } },
+          },
+          required: ["study_id", "hypothesis_id", "script", "features", "split"],
         },
       },
-      required: ["manifest"],
+      required: ["approval_id", "manifest"],
     },
   },
   {
@@ -146,6 +181,25 @@ export const LABMATE_TOOLS = [
         },
       },
       required: ["study_id", "kind", "finding"],
+    },
+  },
+  {
+    name: "record_decision",
+    description:
+      "Record a decision about the study after reviewing runs: promote the best " +
+      "run as the result, or reject/rerun/branch/stop. Always record a promote " +
+      "decision for the run you select at the end (with its run id and a reason), " +
+      "and pair the promoted run with a critique (target_run_id = that run).",
+    input_schema: {
+      type: "object",
+      properties: {
+        study_id: { type: "string" },
+        action: { type: "string", enum: ["promote", "reject", "rerun", "branch", "stop"] },
+        promoted_run_id: { type: "string" },
+        rejected_run_id: { type: "string" },
+        reason: { type: "string" },
+      },
+      required: ["study_id", "action"],
     },
   },
   {

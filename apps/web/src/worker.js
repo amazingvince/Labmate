@@ -761,6 +761,14 @@ async function launchExperiment(env, body) {
     const sr0 = await getStudyRow(env, manifest.study_id);
     if (sr0) manifest.dataset_uri = datasetUriFor(env, mapStudy(sr0));
   }
+
+  // SCRIPT path: the agent authored a self-contained Python training script. We run it
+  // in a network-isolated Modal Sandbox (the runner's dual-mode endpoint), NOT the
+  // legacy manifest->sklearn path. Same gates and recording; no model.family/metric.
+  if (manifest && typeof manifest.script === "string" && manifest.script.trim().length) {
+    return launchScriptExperiment(env, manifest);
+  }
+
   const dvRow = manifest && manifest.study_id ? await latestDatasetVersionRow(env, manifest.study_id) : null;
   const dv = mapDatasetVersion(dvRow);
 
@@ -888,14 +896,177 @@ async function launchExperiment(env, body) {
   );
 }
 
-async function runOnModal(env, manifest) {
+/**
+ * SCRIPT path for launch_experiment — the agent submits a Python training script that
+ * runs in a network-isolated Modal Sandbox. Reuses the manifest path's gates (approval,
+ * budget) and the SAME leakage checks, then relays the runner's dual-mode { script,
+ * dataset_uri, declared } response and records a run + the script as the manifest.
+ */
+async function launchScriptExperiment(env, manifest) {
+  // study + data contract
+  const studyRow = await getStudyRow(env, manifest.study_id);
+  if (!studyRow) return fail(422, "invalid_manifest", `unknown study_id ${manifest.study_id}`);
+  const study = mapStudy(studyRow);
+  const dvRow = await latestDatasetVersionRow(env, manifest.study_id);
+  const dv = mapDatasetVersion(dvRow);
+
+  // 1. Methodology guardrails (422). The script path skips model.family/metric.
+  if (!manifest.hypothesis_id) {
+    return fail(422, "invalid_manifest", "manifest.hypothesis_id is required (every run links to a hypothesis)");
+  }
+  if (!manifest.split || manifest.split.seed === undefined || manifest.split.seed === null) {
+    return fail(422, "invalid_manifest", "manifest.split.seed is required (reproducibility)");
+  }
+  // tune_on may live at the top level or under search; reject test on either.
+  const resolvedTuneOn = manifest.tune_on ?? manifest.search?.tune_on;
+  if (String(resolvedTuneOn ?? "").trim().toLowerCase() === "test") {
+    return fail(422, "invalid_manifest", "tuning on the test split is forbidden; use tune_on=validation");
+  }
+
+  // The banned/leaky set: study constraints ∪ profile leakage ∪ dataset_version
+  // banned/leakage ∪ any manifest-declared banned columns. SAME leakage enforcement
+  // as the manifest path; no banned/leaky column may appear in features.
+  const constraints = parse(studyRow.constraints_json) || {};
+  const profileLeak = profileFor(study.dataset_id, study.target).leakage_candidates || [];
+  const bannedSet = new Set([
+    ...(constraints.banned_columns || []),
+    ...profileLeak,
+    ...((dv && dv.banned_columns) || []),
+    ...((dv && dv.leakage_candidates) || []),
+    ...(manifest.banned_columns || []),
+  ]);
+  const features = manifest.features || [];
+  const leaked = features.filter((c) => bannedSet.has(c));
+  if (leaked.length) {
+    return fail(422, "invalid_manifest", `banned/leaky columns present in features: ${[...new Set(leaked)].sort().join(", ")}`);
+  }
+
+  // 2. Compute gate: a recorded human approval must exist, and budget must remain (402)
+  const approvalCount = await env.DB.prepare(
+    "SELECT COUNT(*) AS c FROM feedback WHERE study_id = ? AND type = 'approval'",
+  )
+    .bind(study.id)
+    .first();
+  if (!approvalCount || approvalCount.c < 1) {
+    return fail(402, "approval_required", "No recorded approval (feedback type=approval) on file for this study.");
+  }
+  const runCount = await env.DB.prepare("SELECT COUNT(*) AS c FROM run WHERE study_id = ?").bind(study.id).first();
+  const maxTrials = study.budget?.max_trials ?? 20;
+  if (runCount && runCount.c >= maxTrials) {
+    return fail(402, "budget_exceeded", `Run budget exhausted (${runCount.c}/${maxTrials} trials used).`);
+  }
+
+  // 3. Submit the script to the runner's Sandbox executor (dual-mode body w/ "script").
+  const payload = {
+    script: manifest.script,
+    dataset_uri: manifest.dataset_uri,
+    declared: {
+      features,
+      banned_columns: [...bannedSet],
+      seed: manifest.split.seed,
+      tune_on: resolvedTuneOn || "validation",
+    },
+  };
+  const result = await runOnModal(env, payload);
+  if (result.error === "runner_unavailable") {
+    return fail(502, "runner_unavailable", result.detail || "MODAL_RUNNER_URL is not configured.");
+  }
+  if (result.status === "rejected") {
+    return fail(422, "invalid_manifest", result.reason || "runner rejected the script");
+  }
+
+  // 4. Record the manifest (with the script in manifest_json) + the run.
+  const manifestId = newId("man");
+  const created = nowIso();
+  await env.DB.prepare(
+    `INSERT INTO experiment_manifest (id, study_id, hypothesis_id, model_family, features_json,
+       search_space_json, manifest_json, seed, applied_feedback_id, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  )
+    .bind(
+      manifestId,
+      study.id,
+      manifest.hypothesis_id,
+      null,
+      JSON.stringify(features),
+      JSON.stringify(manifest.search || {}),
+      JSON.stringify(manifest),
+      manifest.split.seed ?? null,
+      manifest.applied_feedback_id ?? null,
+      created,
+    )
+    .run();
+
+  const hypRow = await env.DB.prepare("SELECT * FROM hypothesis WHERE id = ?").bind(manifest.hypothesis_id).first();
+  const rationale = hypRow
+    ? `Tests: ${hypRow.statement}`
+    : `Run for hypothesis ${manifest.hypothesis_id} on study ${study.id}.`;
+
+  const prov = result.provenance || {};
+  const status = ["completed", "running", "failed", "queued"].includes(result.status) ? result.status : "completed";
+  const metrics = numbersOnly(result.metrics || {});
+  const params = result.params || {};
+  const artifacts = result.artifacts || {};
+  const seed = prov.seed ?? manifest.split.seed ?? null;
+  const runId = newId("run");
+
+  await env.DB.prepare(
+    `INSERT INTO run (id, study_id, hypothesis_id, manifest_id, tracker_run_id, status, model_family,
+       metrics_json, params_json, artifacts_json, rationale, tags_json, executor, dataset_hash, code_hash, seed, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  )
+    .bind(
+      runId,
+      study.id,
+      manifest.hypothesis_id,
+      manifestId,
+      result.tracker_run_id ?? null,
+      status,
+      null,
+      JSON.stringify(metrics),
+      JSON.stringify(params),
+      JSON.stringify(artifacts),
+      rationale,
+      JSON.stringify(manifest.tags || []),
+      "modal-runner",
+      prov.dataset_hash ?? null,
+      prov.code_hash ?? null,
+      seed,
+      created,
+    )
+    .run();
+
+  return json(
+    compact({
+      id: runId,
+      study_id: study.id,
+      hypothesis_id: manifest.hypothesis_id,
+      manifest_id: manifestId,
+      tracker_run_id: result.tracker_run_id,
+      status,
+      metrics,
+      params,
+      artifacts,
+      rationale,
+      tags: manifest.tags || [],
+      executor: "modal-runner",
+      dataset_hash: prov.dataset_hash,
+      code_hash: prov.code_hash,
+      seed,
+      created_at: created,
+    }),
+    201,
+  );
+}
+
+async function runOnModal(env, payload) {
   const url = env.MODAL_RUNNER_URL;
   if (!url) return { error: "runner_unavailable", detail: "MODAL_RUNNER_URL is not configured." };
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(manifest),
+      body: JSON.stringify(payload),
     });
     const data = await res.json().catch(() => null);
     if (!data) return { error: "runner_unavailable", detail: `runner returned ${res.status} with no JSON body` };

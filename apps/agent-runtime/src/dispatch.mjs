@@ -84,6 +84,10 @@ export function makeDispatcher(deps) {
       return controlPlane.post("/api/critiques", input);
     },
 
+    async record_decision(input) {
+      return controlPlane.post("/api/decisions", input);
+    },
+
     async write_report(input) {
       return controlPlane.post("/api/reports", {
         study_id: input.study_id,

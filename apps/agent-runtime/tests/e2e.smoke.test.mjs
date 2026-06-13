@@ -54,14 +54,19 @@ function fakeControlPlane() {
             return { error: "approval_required", http_status: 402 };
           }
           const feats = body?.manifest?.features ?? [];
-          const tuneOn = body?.manifest?.search?.tune_on;
-          // Enforce the same guards the real runner does.
+          // tune_on can live at the manifest top level (script path) or under search.
+          const tuneOn = body?.manifest?.tune_on ?? body?.manifest?.search?.tune_on;
+          // Enforce the same guards the real worker/runner do — banned columns in the
+          // declared features and tune_on=test are rejected, regardless of whether the
+          // manifest carries a script (sandbox path) or a model spec (legacy path).
           if (feats.some((f) => BANNED.includes(f))) {
             return { error: "banned_column_in_features", detail: feats.filter((f) => BANNED.includes(f)).join(","), http_status: 422 };
           }
           if (tuneOn === "test") {
             return { error: "tune_on_test_forbidden", http_status: 422 };
           }
+          // A script manifest runs in the Modal Sandbox and returns metrics like the
+          // legacy manifest path; the runner reports the script's /work/result.json.
           const run = {
             id: `run_${state.runs.length + 1}`,
             status: "completed",
@@ -152,15 +157,32 @@ test("full loop: profile → propose → leaky launch rejected → corrected rer
       hypotheses: [{ statement: "baseline", model_family: "logistic_regression", features: ["priority"] }],
     }),
     toolUse("u3", "request_approval", { study_id: "s1", reason: "run baseline" }),
-    // leaky attempt — includes a banned column; dispatcher must relay 422
+    // leaky attempt — the agent-authored script DECLARES a banned column in features;
+    // the worker/runner must relay 422 so a corrected rerun happens.
     toolUse("u4", "launch_experiment", {
       approval_id: "appr_1",
-      manifest: { study_id: "s1", hypothesis_id: "hyp_0", features: ["priority", "resolved_at"], tags: ["baseline"] },
+      manifest: {
+        study_id: "s1",
+        hypothesis_id: "hyp_0",
+        script: "import pandas as pd\ndf = pd.read_csv('/work/data.csv')\n# ...write /work/result.json",
+        features: ["priority", "resolved_at"],
+        split: { seed: 42 },
+        tune_on: "validation",
+        tags: ["baseline"],
+      },
     }),
     // corrected rerun — banned column removed (this is run_1)
     toolUse("u5", "launch_experiment", {
       approval_id: "appr_1",
-      manifest: { study_id: "s1", hypothesis_id: "hyp_0", features: ["priority"], tags: ["baseline"] },
+      manifest: {
+        study_id: "s1",
+        hypothesis_id: "hyp_0",
+        script: "import pandas as pd\ndf = pd.read_csv('/work/data.csv')\n# ...write /work/result.json",
+        features: ["priority"],
+        split: { seed: 42 },
+        tune_on: "validation",
+        tags: ["baseline"],
+      },
     }),
     toolUse("u6", "record_critique", {
       study_id: "s1",
@@ -172,7 +194,15 @@ test("full loop: profile → propose → leaky launch rejected → corrected rer
     // a second, non-baseline experiment (this is run_2)
     toolUse("u7", "launch_experiment", {
       approval_id: "appr_1",
-      manifest: { study_id: "s1", hypothesis_id: "hyp_1", model: { family: "hist_gradient_boosting" }, features: ["priority", "queue_depth_at_creation"], tags: [] },
+      manifest: {
+        study_id: "s1",
+        hypothesis_id: "hyp_1",
+        script: "import pandas as pd\ndf = pd.read_csv('/work/data.csv')\n# ...gradient boosting, write /work/result.json",
+        features: ["priority", "queue_depth_at_creation"],
+        split: { seed: 42 },
+        tune_on: "validation",
+        tags: [],
+      },
     }),
     toolUse("u8", "write_report", { study_id: "s1" }),
   ];
