@@ -4,7 +4,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { App } from './App'
 import { OverlayProvider } from './state/overlay'
 import { ToastProvider } from './components/Toast'
-import './styles.css'
+import { ThemeProvider } from '@/components/layout/ThemeProvider'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import './index.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,12 +20,16 @@ if (!rootEl) throw new Error('#root not found')
 
 createRoot(rootEl).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-        <OverlayProvider>
-          <App />
-        </OverlayProvider>
-      </ToastProvider>
-    </QueryClientProvider>
+    <ThemeProvider defaultTheme="system">
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={200}>
+          <ToastProvider>
+            <OverlayProvider>
+              <App />
+            </OverlayProvider>
+          </ToastProvider>
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
   </StrictMode>,
 )

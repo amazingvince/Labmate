@@ -5,8 +5,12 @@
  */
 import type {
   ApprovalRequest,
+  CreateStudyRequest,
+  CreateStudyResponse,
+  DatasetVersion,
   Feedback,
   GradeResult,
+  ProposeExperimentsResponse,
   Report,
   RequestApprovalResponse,
   Study,
@@ -97,13 +101,15 @@ export const api = {
     return post<GradeResult>('/api/grade', body)
   },
 
-  /** Absolute URL of the public agent-activity SSE stream (EventSource can't send headers). */
-  streamUrl(studyId: string): string {
-    return `${API_BASE}/api/studies/${encodeURIComponent(studyId)}/stream`
+  createStudy(body: CreateStudyRequest): Promise<CreateStudyResponse> {
+    return post<CreateStudyResponse>('/api/studies', body)
   },
 
-  /** Inject a human "suggest changes" message into the live session (token-required write). */
-  suggestChange(studyId: string, text: string): Promise<{ status?: string }> {
-    return post<{ status?: string }>(`/api/studies/${encodeURIComponent(studyId)}/message`, { text })
+  profileDataset(study_id: string): Promise<DatasetVersion> {
+    return post<DatasetVersion>('/api/profile', { study_id })
+  },
+
+  proposeExperiments(study_id: string, n = 6): Promise<ProposeExperimentsResponse> {
+    return post<ProposeExperimentsResponse>('/api/experiments/propose', { study_id, n })
   },
 }

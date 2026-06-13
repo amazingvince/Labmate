@@ -1,0 +1,187 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+
+/* Dark mode is driven by a `.dark` class on <html> (set by ThemeProvider +
+   the pre-paint script in index.html), not by prefers-color-scheme. */
+@custom-variant dark (&:is(.dark *));
+
+/* ----------------------------------------------------------------------------
+   Token system. Two layers:
+   1. shadcn semantic tokens (neutral oklch ramp) — light in :root, dark in .dark
+   2. domain + brand tokens (hex) — run status, critique kinds, decisions, brand.
+      The names `--st-*`, `--crit-*`, `--cyan`, `--amber`, `--text-*` are emitted
+      verbatim as `var(--…)` strings by src/lib/derive.ts, so they are kept and
+      simply re-pointed at theme-aware values (defined for BOTH themes).
+---------------------------------------------------------------------------- */
+:root {
+  --radius: 0.625rem;
+
+  /* shadcn semantic — light */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+
+  /* brand accent — light */
+  --brand: #0070f3;
+  --brand-foreground: #ffffff;
+
+  /* run status — light (readable on white) */
+  --st-queued: #64748b;
+  --st-running: #0070f3;
+  --st-completed: #16a34a;
+  --st-failed: #dc2626;
+
+  /* critique kinds — light */
+  --crit-leakage: #dc2626;
+  --crit-testtuning: #ea580c;
+  --crit-metric: #d97706;
+  --crit-calibration: #7c3aed;
+  --crit-robustness: #0891b2;
+
+  /* decision / accent aliases — light */
+  --cyan: #0891b2;
+  --cyan-dim: #0e7490;
+  --amber: #d97706;
+  --amber-dim: #b45309;
+
+  /* legacy text aliases (derive.ts / panes read var(--text-*)) */
+  --text-pri: var(--foreground);
+  --text-sec: var(--muted-foreground);
+  --text-muted: #9ca3af;
+}
+
+.dark {
+  /* shadcn semantic — dark */
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.985 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+
+  /* brand accent — dark (lifted for contrast on near-black) */
+  --brand: #3b9eff;
+  --brand-foreground: #07101d;
+
+  /* run status — dark (the original cockpit signal colors) */
+  --st-queued: #94a3b8;
+  --st-running: #3b9eff;
+  --st-completed: #44e08c;
+  --st-failed: #ff4d5e;
+
+  /* critique kinds — dark */
+  --crit-leakage: #ff4d5e;
+  --crit-testtuning: #ff7a00;
+  --crit-metric: #ffb000;
+  --crit-calibration: #b98cff;
+  --crit-robustness: #2bd9d9;
+
+  /* decision / accent aliases — dark */
+  --cyan: #2bd9d9;
+  --cyan-dim: #15807f;
+  --amber: #ffb000;
+  --amber-dim: #8a5f00;
+
+  --text-pri: var(--foreground);
+  --text-sec: var(--muted-foreground);
+  --text-muted: #6b7280;
+}
+
+/* Map CSS variables onto Tailwind's theme so utilities exist:
+   bg-background, text-foreground, border-border, ring-ring, rounded-lg,
+   font-sans/font-mono, and the domain colors (text-st-running, bg-brand, …).
+   `inline` is required so the utilities reference the live var() (which flips
+   at .dark), not a frozen light value. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+
+  --color-st-queued: var(--st-queued);
+  --color-st-running: var(--st-running);
+  --color-st-completed: var(--st-completed);
+  --color-st-failed: var(--st-failed);
+
+  --color-crit-leakage: var(--crit-leakage);
+  --color-crit-testtuning: var(--crit-testtuning);
+  --color-crit-metric: var(--crit-metric);
+  --color-crit-calibration: var(--crit-calibration);
+  --color-crit-robustness: var(--crit-robustness);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: 'Geist Variable', system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+    text-rendering: optimizeLegibility;
+  }
+  /* Tabular figures for metrics/ids by default in mono. */
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+}

@@ -32,7 +32,12 @@ export type FeedbackType = Feedback['type']
 export type HypothesisStatus = NonNullable<Hypothesis['status']>
 export type StudyStatus = Study['status']
 
+export type CreateStudyRequest = Schemas['CreateStudyRequest']
+export type CreateStudyResponse = Schemas['CreateStudyResponse']
+
 export type StudyListResponse =
   operations['listStudies']['responses']['200']['content']['application/json']
 export type RequestApprovalResponse =
   operations['requestApproval']['responses']['200']['content']['application/json']
+export type ProposeExperimentsResponse =
+  operations['proposeExperiments']['responses']['200']['content']['application/json']

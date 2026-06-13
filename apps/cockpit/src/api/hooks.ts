@@ -174,33 +174,15 @@ export function useStudyActions(studyId: string, opts?: { budgetSeconds?: number
   })
 
   const sendFeedback = useMutation({
-    // Steering does two things: (1) record the note in the ledger with its parsed
-    // constraints (the human's judgment, durable evidence), and (2) inject the same
-    // text as a user.message into the live Managed Agents session so it steers the
-    // agent's next step. A 503 (no runtime wired) is tolerated — the note still lands.
-    mutationFn: async (text: string) => {
+    mutationFn: (text: string) => {
       const parsed = parseConstraints(text)
-      const feedback = await api.recordFeedback({
+      return api.recordFeedback({
         study_id: studyId,
         type: 'note',
         scope: 'study',
         content: text,
         ...(parsed ? { parsed_constraints: parsed } : {}),
       })
-      let injected = false
-      try {
-        await api.suggestChange(studyId, text)
-        injected = true
-      } catch (err) {
-        // Runtime not connected (503) or unreachable — keep the recorded note,
-        // surface it as info, not an error. Re-throw anything unexpected.
-        if (err instanceof HttpError && (err.status === 503 || err.status === 409 || err.status === 0)) {
-          toast.push('info', 'Judgment recorded — runtime not connected, not injected')
-        } else {
-          throw err
-        }
-      }
-      return { feedback, injected }
     },
     onMutate: (text) => {
       const parsed = parseConstraints(text)
@@ -216,9 +198,7 @@ export function useStudyActions(studyId: string, opts?: { budgetSeconds?: number
         }),
       })
     },
-    onSuccess: (res) => {
-      if (res.injected) toast.push('ok', 'Judgment recorded & injected into the session')
-    },
+    onSuccess: () => toast.push('ok', 'Judgment recorded'),
     onError: (err) => toast.push('err', describeError(err)),
   })
 

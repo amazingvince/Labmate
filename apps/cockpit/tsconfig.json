@@ -20,7 +20,8 @@
 
     "baseUrl": ".",
     "paths": {
-      "@labmate/api-types": ["../../packages/api-types/index.ts"]
+      "@labmate/api-types": ["../../packages/api-types/index.ts"],
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"]
