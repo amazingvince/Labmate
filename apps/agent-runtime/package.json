@@ -12,6 +12,6 @@
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.40.0"
+    "@anthropic-ai/sdk": "^0.104.0"
   }
 }

@@ -435,6 +435,18 @@ async function getStudyDetail(env, id) {
   return json(detail);
 }
 
+/**
+ * Where the Modal runner fetches the study's CSV. Derived from the study's
+ * dataset_id and an optional LABMATE_DATASET_BASE (an R2/HTTPS base the runner can
+ * read). The agent gets this back from profile_dataset and echoes it on the
+ * manifest; launchExperiment also default-fills it so a manifest may omit it.
+ */
+function datasetUriFor(env, study) {
+  const base = (env.LABMATE_DATASET_BASE || "").replace(/\/$/, "");
+  const key = `${study.dataset_id}.csv`;
+  return base ? `${base}/${key}` : key;
+}
+
 async function profileDataset(env, body) {
   const studyRow = await getStudyRow(env, body.study_id);
   if (!studyRow) return notFound(`No study ${body.study_id}`);
@@ -482,6 +494,9 @@ async function profileDataset(env, body) {
       split_strategy: split,
       leakage_candidates: leakage,
       banned_columns: banned,
+      // The agent copies this onto launch_experiment manifests so the runner can
+      // fetch the CSV (launch also default-fills it if the manifest omits it).
+      dataset_uri: datasetUriFor(env, study),
     }),
     200,
   );
@@ -492,11 +507,29 @@ async function proposeExperiments(env, body) {
   if (!studyRow) return notFound(`No study ${body.study_id}`);
   const study = mapStudy(studyRow);
   const profile = profileFor(study.dataset_id, study.target);
-  let n = parseInt(body.n ?? 6, 10);
-  if (!Number.isFinite(n) || n < 1) n = 6;
-  if (n > 12) n = 12;
 
-  const cards = hypothesisLibrary(profile).slice(0, n);
+  // The agent reasons in hypotheses and the human approves them (the product
+  // premise) — so when the caller supplies hypotheses, persist THOSE and return
+  // their ids. Fall back to the seeded library only when none are supplied (e.g. a
+  // bare {study_id}). Leaky features are NOT rejected here; the launch-time 422 is
+  // the enforcement point (and the planted-leakage self-correction moment).
+  let cards;
+  if (Array.isArray(body.hypotheses) && body.hypotheses.length) {
+    cards = body.hypotheses
+      .filter((h) => h && h.statement)
+      .map((h) => ({
+        statement: h.statement,
+        rationale: h.rationale,
+        model_family: h.model_family,
+        features: Array.isArray(h.features) ? h.features : [],
+        expected_outcome: h.expected_outcome,
+      }));
+  } else {
+    let n = parseInt(body.n ?? 6, 10);
+    if (!Number.isFinite(n) || n < 1) n = 6;
+    if (n > 12) n = 12;
+    cards = hypothesisLibrary(profile).slice(0, n);
+  }
   const created = nowIso();
   const out = [];
   const stmts = [];
@@ -707,6 +740,13 @@ function validateManifest(m, dv) {
 
 async function launchExperiment(env, body) {
   const manifest = body.manifest;
+  // Default-fill dataset_uri from the study so the agent need not invent it (no tool
+  // exposes the storage location). The agent normally copies it from profile_dataset;
+  // this is the safety net so a manifest can omit it without a spurious 422.
+  if (manifest && manifest.study_id && !manifest.dataset_uri) {
+    const sr0 = await getStudyRow(env, manifest.study_id);
+    if (sr0) manifest.dataset_uri = datasetUriFor(env, mapStudy(sr0));
+  }
   const dvRow = manifest && manifest.study_id ? await latestDatasetVersionRow(env, manifest.study_id) : null;
   const dv = mapDatasetVersion(dvRow);
 

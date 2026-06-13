@@ -58,8 +58,10 @@ export const LABMATE_TOOLS = [
   {
     name: "request_approval",
     description:
-      "Request human approval before spending compute or unbanning a leaky feature. " +
-      "Returns an approval id once granted; launch_experiment needs it.",
+      "Request approval before spending compute or unbanning a leaky feature. " +
+      "Returns { approval_id, status }: status is 'approved' when auto-granted within " +
+      "the study's budget, or 'pending' until a human approves in the cockpit. Only " +
+      "call launch_experiment once you hold an approval_id whose status is 'approved'.",
     input_schema: {
       type: "object",
       properties: {

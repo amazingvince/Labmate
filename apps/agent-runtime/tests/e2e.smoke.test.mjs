@@ -24,10 +24,13 @@ function fakeControlPlane() {
     critiques: [],
     reports: [],
     approvals: [],
+    feedback: [],
     hypotheses: [],
     graded: false,
   };
   const BANNED = ["resolved_at", "time_to_resolution", "closed_status", "agent_notes_final"];
+  const isApproved = (studyId) =>
+    state.feedback.some((f) => f.type === "approval" && f.study_id === studyId);
 
   return {
     state,
@@ -41,7 +44,15 @@ function fakeControlPlane() {
         case "/api/approvals/request":
           state.approvals.push(body);
           return { approval_id: `appr_${state.approvals.length}`, status: "pending" };
+        case "/api/feedback":
+          state.feedback.push(body);
+          return { id: `fb_${state.feedback.length}` };
         case "/api/experiments/launch": {
+          // Mirror the real worker's compute gate: a recorded feedback(type=approval)
+          // must exist for the study (auto-recorded by request_approval within budget).
+          if (!isApproved(body?.manifest?.study_id)) {
+            return { error: "approval_required", http_status: 402 };
+          }
           const feats = body?.manifest?.features ?? [];
           const tuneOn = body?.manifest?.search?.tune_on;
           // Enforce the same guards the real runner does.
@@ -128,7 +139,9 @@ test("launch_experiment without approval is gated (402)", async () => {
 
 test("full loop: profile → propose → leaky launch rejected → corrected rerun → report → done", async () => {
   const cp = fakeControlPlane();
-  const dispatcher = makeDispatcher({ controlPlane: cp, modal: {} });
+  // autoApprove on: request_approval records a real feedback(approval) within budget,
+  // satisfying the launch gate exactly as it must in the autonomous demo.
+  const dispatcher = makeDispatcher({ controlPlane: cp, modal: {}, autoApprove: true });
 
   // The scripted "agent": tries a leaky baseline, gets 422, reruns clean, then a
   // second experiment, critiques it, and writes the report.

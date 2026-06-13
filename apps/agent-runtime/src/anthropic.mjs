@@ -90,15 +90,34 @@ export async function sendToolResult(sessionId, customToolUseId, content, isErro
 }
 
 /**
- * Stream events from a session as an async iterable. Prefer the SDK's stream over
- * hand-rolled SSE. Falls back to polling list() if stream() is unavailable in the
- * pinned SDK version.
+ * Stream events from a session as an async iterable, reconnect/race-safe.
+ *
+ * The SSE stream has no replay and only delivers events emitted after it opens, so
+ * a naive "send kickoff then open stream" (or a dropped connection) can miss early
+ * events — e.g. the first agent.custom_tool_use, which strands the session in
+ * requires_action forever. We use the documented consolidation pattern: open the
+ * live stream, replay full history via events.list() to seed seen-ids (this covers
+ * anything emitted before the stream opened, including the kickoff response), then
+ * tail the live stream deduped by event id. Falls back to polling if stream() is
+ * unavailable in the pinned SDK build.
  */
 export async function* streamEvents(sessionId) {
   const c = client();
   if (c.beta.sessions.events.stream) {
     const stream = await c.beta.sessions.events.stream(sessionId, { betas: [BETA] });
+    const seen = new Set();
+    try {
+      // events.list auto-paginates on iteration; history first, oldest→newest.
+      for await (const past of c.beta.sessions.events.list(sessionId, { betas: [BETA] })) {
+        if (past?.id) seen.add(past.id);
+        yield past;
+      }
+    } catch {
+      /* history replay is best-effort — tail the live stream regardless */
+    }
     for await (const event of stream) {
+      if (event?.id && seen.has(event.id)) continue;
+      if (event?.id) seen.add(event.id);
       yield event;
     }
     return;

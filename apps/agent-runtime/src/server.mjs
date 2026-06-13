@@ -57,6 +57,7 @@ async function startStudy(studyId) {
   const dispatcher = makeDispatcher({
     controlPlane,
     modal,
+    autoApprove: config.autoApprove,
     onApprovalNeeded: async (input, res) => emitter(studyId)({ kind: "approval.needed", input, res }),
   });
 

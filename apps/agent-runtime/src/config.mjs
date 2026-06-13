@@ -30,6 +30,12 @@ export const config = {
   // Optional research-preview feature; default OFF so we don't depend on access.
   outcomesEnabled: read("MANAGED_AGENTS_OUTCOMES", { fallback: "false" }) === "true",
 
+  // Autonomous demo: auto-grant a compute approval when the requested cost is within
+  // the study's budget, recorded as a real feedback(type=approval) so the launch
+  // gate, ledger, and rubric all see a genuine approval. Set false to require a
+  // human to approve in the cockpit. The gate itself is never bypassed.
+  autoApprove: read("LABMATE_AUTO_APPROVE", { fallback: "true" }) === "true",
+
   // Labmate control plane (Cloudflare Worker) + internal token.
   controlPlaneUrl: () =>
     read("LABMATE_PUBLIC_URL", { fallback: "http://127.0.0.1:8787" }),

@@ -367,6 +367,8 @@ export interface components {
             split_strategy?: components["schemas"]["SplitStrategy"];
             leakage_candidates?: string[];
             banned_columns?: string[];
+            /** @description Where the runner pulls the CSV; the agent echoes it onto launch manifests. */
+            dataset_uri?: string;
             /** Format: date-time */
             created_at?: string;
         };
@@ -420,7 +422,7 @@ export interface components {
         };
         ExperimentManifest: {
             study_id: string;
-            hypothesis_id?: string;
+            hypothesis_id: string;
             /** @description Where the runner pulls the CSV (R2 key or public URL). */
             dataset_uri: string;
             target: string;
@@ -767,7 +769,18 @@ export interface operations {
             content: {
                 "application/json": {
                     study_id: string;
-                    /** @default 6 */
+                    /** @description Agent-authored hypothesis cards to persist (the agent reasons in hypotheses; the human approves them). When present these are persisted and their ids returned; when absent, N seeded library cards are returned instead. */
+                    hypotheses?: {
+                        statement: string;
+                        rationale?: string;
+                        model_family?: string;
+                        features?: string[];
+                        expected_outcome?: string;
+                    }[];
+                    /**
+                     * @description Number of library cards to return when `hypotheses` is omitted.
+                     * @default 6
+                     */
                     n?: number;
                 };
             };

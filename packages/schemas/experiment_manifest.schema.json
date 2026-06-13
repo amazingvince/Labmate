@@ -4,7 +4,7 @@
   "title": "ExperimentManifest",
   "description": "A reproducible, sandboxed experiment spec. Claude builds this from an approved hypothesis card; the Modal runner executes it. No arbitrary code.",
   "type": "object",
-  "required": ["study_id", "dataset_uri", "target", "task_type", "split", "features", "model", "metric"],
+  "required": ["study_id", "hypothesis_id", "dataset_uri", "target", "task_type", "split", "features", "model", "metric"],
   "properties": {
     "study_id": { "type": "string" },
     "hypothesis_id": { "type": "string" },

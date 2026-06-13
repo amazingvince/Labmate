@@ -21,13 +21,19 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const envPath = join(repoRoot, ".env");
 const force = process.argv.includes("--force");
 
-// Load .env into process.env (minimal parser; the repo's real loader can replace this).
+// Load .env into process.env. Tolerates both dotenv `KEY=value` and `KEY: value`
+// (the repo's .env uses the colon form); the separator is the FIRST `=` or `:`, so
+// values containing `:` (e.g. http://host:8787) parse correctly.
 function loadEnv() {
   if (!existsSync(envPath)) return {};
   const map = {};
-  for (const line of readFileSync(envPath, "utf8").split("\n")) {
-    if (!line || line.trimStart().startsWith("#") || !line.includes("=")) continue;
-    const i = line.indexOf("=");
+  for (const raw of readFileSync(envPath, "utf8").split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    const colon = line.indexOf(":");
+    const i = eq === -1 ? colon : colon === -1 ? eq : Math.min(eq, colon);
+    if (i <= 0) continue;
     const k = line.slice(0, i).trim();
     const v = line.slice(i + 1).trim();
     map[k] = v;
@@ -84,18 +90,28 @@ async function main() {
     return;
   }
 
-  console.info("Creating Labmate agent (model + DS system prompt + custom tools + skills)...");
+  // The Labmate DS skills (tabular-ds-protocol, leakage-review, optuna-search,
+  // model-card) are CUSTOM skills uploaded to the workspace via the Skills API; pass
+  // their ids in LABMATE_SKILL_IDS (comma-separated skill_* ids) and they attach
+  // here. When absent we attach none — DS_SYSTEM_PROMPT already inlines the core
+  // methodology — rather than the irrelevant `xlsx` Excel skill. Do NOT attach a
+  // wrong skill: the agent is permanent (archive-only).
+  const skills = (process.env.LABMATE_SKILL_IDS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((skill_id) => ({ type: "custom", skill_id, version: "latest" }));
+
+  console.info(
+    `Creating Labmate agent (model + DS system prompt + ${LABMATE_TOOLS.length} custom tools + ${skills.length} skills)...`,
+  );
   const agent = await createAgent({
     name: "Labmate DS",
     model: config.model, // claude-opus-4-8
     system: DS_SYSTEM_PROMPT,
-    tools: LABMATE_TOOLS,
-    // Anthropic-managed DS skills. Confirm availability/skill_ids in the Skills doc;
-    // custom Labmate skills can be uploaded and referenced by skill_id + version.
-    skills: [
-      { type: "anthropic", skill_id: "xlsx" },
-      // { type: "custom", skill_id: "<tabular-ds-protocol id>", version: "1" },
-    ],
+    // Managed Agents custom tools are a type-discriminated union — each needs type:"custom".
+    tools: LABMATE_TOOLS.map((t) => ({ type: "custom", ...t })),
+    ...(skills.length ? { skills } : {}),
     metadata: { project: "labmate" },
   });
   console.info(`  agent.id = ${agent.id}`);

@@ -31,23 +31,37 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const env = {};
 const envPath = join(root, ".env");
 if (existsSync(envPath)) {
-  for (const line of readFileSync(envPath, "utf8").split("\n")) {
-    if (!line || line.trimStart().startsWith("#") || !line.includes("=")) continue;
-    const i = line.indexOf("=");
-    env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-    if (process.env[line.slice(0, i).trim()] === undefined)
-      process.env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  // Tolerate both `KEY=value` and `KEY: value` (the repo .env uses the colon form);
+  // separator is the first `=` or `:` so values with `:` (URLs) parse correctly.
+  for (const raw of readFileSync(envPath, "utf8").split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    const colon = line.indexOf(":");
+    const i = eq === -1 ? colon : colon === -1 ? eq : Math.min(eq, colon);
+    if (i <= 0) continue;
+    const k = line.slice(0, i).trim();
+    const v = line.slice(i + 1).trim();
+    env[k] = v;
+    if (process.env[k] === undefined) process.env[k] = v;
   }
 }
 const get = (k, fb) => process.env[k] ?? env[k] ?? fb;
 
 // --- preflight -------------------------------------------------------------
-const required = ["ANTHROPIC_API_KEY", "LABMATE_INTERNAL_TOKEN", "MODAL_RUNNER_URL", "LABMATE_AGENT_ID", "LABMATE_ENVIRONMENT_ID"];
+// Hard requirements for the runtime to start a session and drive the loop.
+const required = ["ANTHROPIC_API_KEY", "LABMATE_INTERNAL_TOKEN", "LABMATE_AGENT_ID", "LABMATE_ENVIRONMENT_ID"];
 const missing = required.filter((k) => !get(k));
 if (missing.length) {
   console.error("Cannot run the demo — missing:\n  " + missing.join("\n  "));
   console.error("\nFill .env and run `npm run agent:bootstrap` first (see docs/GOAL_E2E.md).");
   process.exit(1);
+}
+// MODAL_RUNNER_URL belongs to the control-plane Worker (wrangler var), not this
+// script — warn if it's not visible here, but don't block: launches will 502 from
+// the Worker if it isn't set there.
+if (!get("MODAL_RUNNER_URL")) {
+  console.warn("⚠️  MODAL_RUNNER_URL not set in this env — ensure the control-plane Worker has it (wrangler var / .dev.vars), or launches will 502.");
 }
 
 const controlPlane = (get("LABMATE_PUBLIC_URL", "http://127.0.0.1:8787")).replace(/\/$/, "");
@@ -88,7 +102,8 @@ function log(evt) {
   const t = new Date().toLocaleTimeString();
   const k = evt.kind ?? evt.type ?? "event";
   if (k === "agent.activity") {
-    const text = evt.event?.message?.content?.find?.((b) => b.type === "text")?.text ?? "";
+    const content = evt.event?.content ?? evt.event?.message?.content;
+    const text = Array.isArray(content) ? (content.find((b) => b.type === "text")?.text ?? "") : "";
     if (text) console.info(`  ${t} 🧠 ${text.slice(0, 160)}`);
   } else if (k === "tool.use") {
     console.info(`  ${t} 🔧 ${evt.name}(${JSON.stringify(evt.input).slice(0, 120)})`);

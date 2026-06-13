@@ -44,3 +44,6 @@ MODAL_RUNNER_URL = ""
 # Managed Agents session and GET /api/studies/{id}/stream proxies its SSE. Empty by
 # default so the contract test runs without a runtime; set locally in .dev.vars.
 AGENT_RUNTIME_URL = ""
+# Base the Modal runner reads study CSVs from (R2/HTTPS). dataset_uri on a manifest
+# resolves to "{LABMATE_DATASET_BASE}/{dataset_id}.csv". Empty → relative key.
+LABMATE_DATASET_BASE = ""

@@ -55,6 +55,45 @@ export async function runStudyLoop({ studyId, agent, dispatcher, controlPlane, e
 
   let toolCalls = 0;
   let done = false;
+  // Buffer custom tool-use events by id so the requires_action sweep (which keys
+  // off stop_reason.event_ids) can find one delivered only via history replay.
+  const toolUseBuffer = new Map();
+  const dispatchedIds = new Set();
+
+  /**
+   * Execute one custom tool-use, return its result to the session, and report
+   * whether the study is now done. Deduped by id so the direct path and the
+   * requires_action sweep never double-execute the same call.
+   * @returns {Promise<boolean>} true if the study graded done after a write_report
+   */
+  async function dispatchToolUse(tu) {
+    if (!tu || !tu.id || dispatchedIds.has(tu.id)) return false;
+    dispatchedIds.add(tu.id);
+    toolCalls += 1;
+    emit({ kind: "tool.use", study_id: studyId, name: tu.name, input: tu.input });
+
+    if (toolCalls > maxToolCalls) {
+      await agent.sendToolResult(
+        sessionId,
+        tu.id,
+        JSON.stringify({
+          error: "budget_exhausted",
+          detail: "Tool-call budget reached. Write the report with what you have and stop.",
+        }),
+        true,
+      );
+      return false;
+    }
+
+    const result = await dispatcher.dispatch(tu.name, tu.input ?? {});
+    emit({ kind: "tool.result", study_id: studyId, name: tu.name, result });
+    await agent.sendToolResult(sessionId, tu.id, JSON.stringify(result), Boolean(result?.error));
+
+    if (tu.name === "write_report") {
+      return await isDone({ studyId, controlPlane, outcomesEnabled, session: agent, sessionId });
+    }
+    return false;
+  }
 
   for await (const event of agent.streamEvents(sessionId)) {
     const type = event.type ?? event.event ?? "";
@@ -72,49 +111,46 @@ export async function runStudyLoop({ studyId, agent, dispatcher, controlPlane, e
       continue;
     }
 
-    // 2. Custom tool-use → execute for real → return the result.
+    // 2. Custom tool-use → buffer it (by event id and tool-use id) then dispatch.
     const toolUse = extractToolUse(event);
     if (toolUse) {
-      toolCalls += 1;
-      emit({ kind: "tool.use", study_id: studyId, name: toolUse.name, input: toolUse.input });
-
-      if (toolCalls > maxToolCalls) {
-        await agent.sendUserMessage(
-          sessionId,
-          "Tool-call budget reached. Write the report with what you have and stop.",
-        );
-        continue;
-      }
-
-      const result = await dispatcher.dispatch(toolUse.name, toolUse.input ?? {});
-      emit({ kind: "tool.result", study_id: studyId, name: toolUse.name, result });
-      await agent.sendToolResult(sessionId, toolUse.id, JSON.stringify(result), Boolean(result?.error));
-
-      // After a report is written, check whether we're done.
-      if (toolUse.name === "write_report") {
-        done = await isDone({ studyId, controlPlane, outcomesEnabled, session: agent, sessionId });
-        if (done) {
-          emit({ kind: "study.done", study_id: studyId });
-          break;
-        }
+      if (event.id) toolUseBuffer.set(event.id, toolUse);
+      if (toolUse.id) toolUseBuffer.set(toolUse.id, toolUse);
+      if (await dispatchToolUse(toolUse)) {
+        done = true;
+        emit({ kind: "study.done", study_id: studyId });
+        break;
       }
       continue;
     }
 
     // 3. The agent went idle. On the live API `session.status_idle` carries a
-    // `stop_reason`: `requires_action` means it's blocked waiting on a tool
-    // result we still owe it (or a confirmation) — do NOT nudge, just continue;
-    // anything else (`end_turn`, `retries_exhausted`) is a real stopping point
-    // where we check done and otherwise nudge the next step.
+    // `stop_reason`. `requires_action` means it is blocked on tool results we owe
+    // it: the blocking event ids are in stop_reason.event_ids — dispatch any we
+    // buffered but have not answered (a safety net over the direct path for an
+    // event seen only via history replay), then keep waiting (do NOT nudge).
+    // Any other stop reason (`end_turn`, `retries_exhausted`) is a real stopping
+    // point where we check done and otherwise nudge the next step.
     if (
       type === "session.status_idle" ||
       type === "session.awaiting_input" ||
       type === "session.idle" ||
       type === "awaiting_input"
     ) {
-      const stop = event.stop_reason?.type ?? event.stopReason?.type;
-      if (stop === "requires_action") {
-        continue; // mid-tool-result; the tool-use branch handles the response
+      const stopReason = event.stop_reason ?? event.stopReason;
+      if (stopReason?.type === "requires_action") {
+        for (const id of stopReason.event_ids ?? []) {
+          const tu = toolUseBuffer.get(id);
+          if (tu && (await dispatchToolUse(tu))) {
+            done = true;
+            break;
+          }
+        }
+        if (done) {
+          emit({ kind: "study.done", study_id: studyId });
+          break;
+        }
+        continue;
       }
       done = await isDone({ studyId, controlPlane, outcomesEnabled, session: agent, sessionId });
       if (done) {
@@ -129,6 +165,16 @@ export async function runStudyLoop({ studyId, agent, dispatcher, controlPlane, e
       );
       emit({ kind: "nudge", study_id: studyId });
       continue;
+    }
+
+    // 3b. Session errors are conveyed as session.error (carrying error.message and a
+    // retry_status). If the orchestrator is retrying, keep streaming; otherwise it's
+    // a clean terminal failure — surface it and stop (don't hang to the SSE timeout).
+    if (type === "session.error") {
+      const err = event.error ?? {};
+      emit({ kind: "loop.error", study_id: studyId, error: err.message ?? "session.error", retry_status: err.retry_status });
+      if (err.retry_status === "retrying" || event.retry_status === "retrying") continue;
+      break;
     }
 
     // 4. Terminal session states.
