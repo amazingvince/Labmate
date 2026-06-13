@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Autopilot DS</title>
+<style>
+  :root{
+    --bg:#0e0f12; --panel:#16181d; --panel2:#1c1f26; --line:#2a2e37;
+    --txt:#e7e9ee; --muted:#9aa0ad; --dim:#6b7280;
+    --accent:#7f77dd; --teal:#1d9e75; --amber:#ef9f27; --red:#e24b4a; --blue:#378add;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);font-size:14px;line-height:1.5}
+  header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:16px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--dim)}
+  .dot.running{background:var(--teal);box-shadow:0 0 0 4px rgba(29,158,117,.18)}
+  .dot.waiting{background:var(--amber);box-shadow:0 0 0 4px rgba(239,159,39,.18)}
+  .dot.done{background:var(--blue)} .dot.error,.dot.stopped{background:var(--red)}
+  .status{font-family:var(--mono);font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  button{font-family:var(--sans);font-size:13px;border-radius:8px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--txt);padding:8px 14px;cursor:pointer}
+  button:hover{border-color:#3a3f4b}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:500}
+  button.danger{background:transparent;border-color:#5a2a2a;color:#f0999a}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  main{display:grid;grid-template-columns:1.1fr .9fr;gap:16px;padding:16px 20px;max-width:1200px;margin:0 auto}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+  .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+    margin:0;padding:12px 16px;border-bottom:1px solid var(--line);font-weight:600}
+  /* feed */
+  #feed{padding:8px 0;overflow-y:auto;max-height:62vh}
+  .row{display:flex;gap:10px;padding:7px 16px;align-items:flex-start}
+  .tag{flex:none;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.05em;
+    padding:2px 7px;border-radius:5px;margin-top:2px;white-space:nowrap}
+  .tag.agent{background:rgba(127,119,221,.16);color:#b8b2f0}
+  .tag.tool{background:rgba(55,138,221,.15);color:#86b6ec}
+  .tag.experiment{background:rgba(29,158,117,.16);color:#76d8b9}
+  .tag.system{background:rgba(154,160,173,.14);color:#aab0bd}
+  .tag.error{background:rgba(226,75,74,.16);color:#f0999a}
+  .row .body{white-space:pre-wrap;word-break:break-word}
+  .row.agent .body{color:var(--txt)} .row.tool .body,.row.system .body{color:var(--muted)}
+  /* leaderboard */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  td.metric{font-family:var(--mono);font-weight:600}
+  tr.best td{background:rgba(29,158,117,.08)}
+  tr.leak td{background:rgba(226,75,74,.08)}
+  .pill{font-size:10px;padding:1px 6px;border-radius:5px;font-family:var(--mono)}
+  .pill.best{background:rgba(29,158,117,.2);color:#76d8b9}
+  .pill.leak{background:rgba(226,75,74,.2);color:#f0999a}
+  .empty{padding:24px 16px;color:var(--dim);font-size:13px}
+  /* steer */
+  #steer{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px}
+  #steerInput{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    color:var(--txt);padding:9px 11px;font-family:var(--sans);font-size:13px;resize:none}
+  /* checkpoint modal */
+  #overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:10}
+  #overlay.show{display:flex}
+  .modal{width:min(560px,92vw);background:var(--panel);border:1px solid var(--amber);border-radius:14px;overflow:hidden}
+  .modal .head{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .modal .head .k{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--amber)}
+  .modal .content{padding:18px}
+  .modal .field{margin-bottom:14px}
+  .modal .label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:4px}
+  .modal .val{color:var(--txt)}
+  .modal textarea{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    color:var(--txt);padding:9px 11px;font-family:var(--sans);font-size:13px;min-height:64px;resize:vertical}
+  .modal .actions{display:flex;gap:10px;justify-content:flex-end;padding:0 18px 18px}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot" id="dot"></span> Autopilot&nbsp;DS</div>
+  <div style="display:flex;align-items:center;gap:14px">
+    <span class="status" id="statusText">idle</span>
+    <button class="primary" id="runBtn" onclick="startRun()">Start run</button>
+    <button class="danger" id="stopBtn" onclick="stopRun()" disabled>Stop</button>
+  </div>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Agent activity</h2>
+    <div id="feed"><div class="empty">Press “Start run” to launch the autopilot.</div></div>
+    <div id="steer">
+      <textarea id="steerInput" rows="1" placeholder="Steer the agent — e.g. “focus on gradient boosting” (sent as a priority instruction)"></textarea>
+      <button onclick="sendSteer()">Send</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Experiment leaderboard</h2>
+    <div id="board"><div class="empty">No experiments logged yet.</div></div>
+  </section>
+</main>
+
+<div id="overlay">
+  <div class="modal">
+    <div class="head"><span class="k">Checkpoint — your decision</span></div>
+    <div class="content">
+      <div class="field"><div class="label">The agent wants to</div><div class="val" id="cpSummary">—</div></div>
+      <div class="field"><div class="label">Proposed action</div><div class="val" id="cpAction">—</div></div>
+      <div class="field"><div class="label">Why</div><div class="val" id="cpWhy">—</div></div>
+      <div class="field"><div class="label">Feedback (used if you request changes)</div>
+        <textarea id="cpFeedback" placeholder="Optional — what should it do instead?"></textarea></div>
+    </div>
+    <div class="actions">
+      <button class="danger" onclick="resolveCheckpoint('reject')">Request changes</button>
+      <button class="primary" onclick="resolveCheckpoint('approve')">Approve &amp; proceed</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentCheckpointId = null;
+const $ = (id) => document.getElementById(id);
+
+async function startRun(){
+  $("runBtn").disabled = true;
+  await fetch("/api/run", {method:"POST"});
+}
+async function stopRun(){ await fetch("/api/stop", {method:"POST"}); }
+
+async function sendSteer(){
+  const el = $("steerInput"); const msg = el.value.trim();
+  if(!msg) return;
+  el.value = "";
+  await fetch("/api/steer", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({message: msg})});
+}
+$("steerInput")?.addEventListener("keydown", (e)=>{
+  if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); sendSteer(); }
+});
+
+async function resolveCheckpoint(decision){
+  if(!currentCheckpointId) return;
+  const feedback = $("cpFeedback").value;
+  $("overlay").classList.remove("show");
+  await fetch("/api/checkpoint", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id: currentCheckpointId, decision, feedback})});
+  currentCheckpointId = null;
+  $("cpFeedback").value = "";
+}
+
+function renderFeed(feed){
+  const box = $("feed");
+  if(!feed.length){ return; }
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.innerHTML = feed.map(e => `
+    <div class="row ${e.kind}">
+      <span class="tag ${e.kind}">${e.kind}</span>
+      <span class="body">${escapeHtml(e.text)}</span>
+    </div>`).join("");
+  if(atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function renderBoard(exps){
+  const box = $("board");
+  if(!exps.length){ box.innerHTML = `<div class="empty">No experiments logged yet.</div>`; return; }
+  // best = highest headline metric among non-leaky runs
+  const score = (e)=> headline(e.metrics).value;
+  const clean = exps.filter(e=>!e.leakage_suspected);
+  const best = (clean.length?clean:exps).reduce((a,b)=> score(b)>score(a)?b:a);
+  const rows = exps.map(e=>{
+    const h = headline(e.metrics);
+    const cls = e.id===best.id ? "best" : (e.leakage_suspected ? "leak" : "");
+    const pill = e.id===best.id ? `<span class="pill best">best</span>`
+              : (e.leakage_suspected ? `<span class="pill leak">leak?</span>` : "");
+    return `<tr class="${cls}">
+      <td>${escapeHtml(e.name||"")} ${pill}</td>
+      <td>${escapeHtml(e.model_type||"")}</td>
+      <td class="metric">${h.label}</td>
+      <td style="color:var(--dim)">${escapeHtml(e.cv_strategy||"")}</td>
+    </tr>`;
+  }).join("");
+  box.innerHTML = `<table><thead><tr><th>Experiment</th><th>Model</th><th>Metric</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function headline(metrics){
+  if(!metrics || typeof metrics!=="object") return {label:"—", value:-1};
+  for(const k of ["auc","roc_auc","f1","accuracy"]){
+    if(k in metrics){ const v=Number(metrics[k]); return {label:`${k} ${v.toFixed(3)}`, value:v}; }
+  }
+  const k = Object.keys(metrics)[0];
+  const v = Number(metrics[k]);
+  return {label:`${k} ${isNaN(v)?metrics[k]:v.toFixed(3)}`, value:isNaN(v)?-1:v};
+}
+
+function applyStatus(s){
+  $("dot").className = "dot " + s;
+  $("statusText").textContent = s;
+  const active = (s==="running"||s==="waiting");
+  $("runBtn").disabled = active;
+  $("stopBtn").disabled = !active;
+  if(s==="done"||s==="error"||s==="stopped"||s==="idle") $("runBtn").disabled = false;
+}
+
+function maybeShowCheckpoint(cp){
+  if(cp && cp.id !== currentCheckpointId){
+    currentCheckpointId = cp.id;
+    $("cpSummary").textContent = cp.summary || "(decision needed)";
+    $("cpAction").textContent = cp.proposed_action || "—";
+    $("cpWhy").textContent = cp.rationale || "—";
+    $("overlay").classList.add("show");
+  } else if(!cp && currentCheckpointId && !$("overlay").classList.contains("show")){
+    currentCheckpointId = null;
+  }
+}
+
+function escapeHtml(s){ return (s||"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+async function poll(){
+  try{
+    const r = await fetch("/api/state");
+    const s = await r.json();
+    applyStatus(s.status);
+    renderFeed(s.feed);
+    renderBoard(s.experiments);
+    maybeShowCheckpoint(s.checkpoint);
+  }catch(e){ /* backend not up yet */ }
+}
+setInterval(poll, 800);
+poll();
+</script>
+</body>
+</html>
