@@ -137,7 +137,20 @@ const server = http.createServer(async (req, res) => {
     // Replay buffered events so a late subscriber catches up.
     for (const evt of entry.buffer) res.write(`data: ${JSON.stringify(evt)}\n\n`);
     entry.subscribers.add(res);
-    req.on("close", () => entry.subscribers.delete(res));
+    // Heartbeat: SSE comment lines (ignored by EventSource) keep the connection
+    // from being closed as idle by intermediaries (the Cloudflare proxy, the Modal
+    // web_server edge) and let us detect a dead socket. Cleared on disconnect.
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(": keepalive\n\n");
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, 20000);
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      entry.subscribers.delete(res);
+    });
     return;
   }
 
