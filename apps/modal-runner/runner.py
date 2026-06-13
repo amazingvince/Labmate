@@ -154,17 +154,24 @@ def _build_estimator(family, seed, params):
     from sklearn.linear_model import LinearRegression, LogisticRegression
 
     params = dict(params or {})
+    # Merge agent params over the runner's defaults via dict spread so a param the
+    # agent also supplies (e.g. max_iter, random_state) overrides the default rather
+    # than colliding as a duplicate keyword argument.
     if family == "dummy":
-        return DummyClassifier(strategy="prior")
+        # DummyClassifier only takes `strategy` (+ optional constant); honor it.
+        kw = {"strategy": params.get("strategy", "prior")}
+        if "constant" in params:
+            kw["constant"] = params["constant"]
+        return DummyClassifier(**kw)
     if family == "logistic_regression":
-        return LogisticRegression(max_iter=1000, **params)
+        return LogisticRegression(**{"max_iter": 1000, **params})
     if family == "linear_regression":
         return LinearRegression(**params)
     if family == "random_forest":
-        return RandomForestClassifier(random_state=seed, n_jobs=-1, **params)
+        return RandomForestClassifier(**{"random_state": seed, "n_jobs": -1, **params})
     if family in ("hist_gradient_boosting", "xgboost", "lightgbm"):
         # xgboost/lightgbm aren't in the default image; HGB is the safe stand-in.
-        return HistGradientBoostingClassifier(random_state=seed, **params)
+        return HistGradientBoostingClassifier(**{"random_state": seed, **params})
     raise ValueError(f"Unsupported model family: {family}")
 
 
