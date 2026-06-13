@@ -85,6 +85,16 @@ export const api = {
     return request<StudyDetail>(`/api/studies/${encodeURIComponent(id)}`)
   },
 
+  /** Absolute URL of the public agent-activity SSE stream (EventSource can't send headers). */
+  streamUrl(studyId: string): string {
+    return `${API_BASE}/api/studies/${encodeURIComponent(studyId)}/stream`
+  },
+
+  /** Inject a human "suggest changes" message into the live session (token-required write). */
+  suggestChange(studyId: string, text: string): Promise<{ status?: string }> {
+    return post<{ status?: string }>(`/api/studies/${encodeURIComponent(studyId)}/message`, { text })
+  },
+
   recordFeedback(body: Feedback): Promise<Feedback> {
     return post<Feedback>('/api/feedback', body)
   },

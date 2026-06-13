@@ -3,12 +3,13 @@
  *  tab, so older links keep working. */
 import { useSyncExternalStore } from 'react'
 
-export const STUDY_TABS = ['overview', 'experiments', 'ledger', 'report'] as const
+export const STUDY_TABS = ['overview', 'live', 'experiments', 'ledger', 'report'] as const
 export type StudyTab = (typeof STUDY_TABS)[number]
 export const DEFAULT_TAB: StudyTab = 'overview'
 
 export const STUDY_TAB_LABELS: Record<StudyTab, string> = {
   overview: 'Overview',
+  live: 'Live',
   experiments: 'Experiments',
   ledger: 'Ledger',
   report: 'Report',

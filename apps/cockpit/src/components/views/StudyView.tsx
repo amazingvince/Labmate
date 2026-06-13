@@ -3,6 +3,7 @@
  *  tabs never re-fetches, re-polls, or drops the overlay. */
 import { useMemo } from 'react'
 import { useStudy, useStudyActions } from '@/api/hooks'
+import { useAgentStream } from '@/api/useAgentStream'
 import { deriveBannedColumns, methodologicalFlag, primaryMetricKey } from '@/lib/derive'
 import { mergeStudyDetail, useOverlay } from '@/state/overlay'
 import type { StudyTab } from '@/lib/router'
@@ -15,6 +16,11 @@ import { OverviewTab } from '@/components/tabs/OverviewTab'
 import { ExperimentsTab } from '@/components/tabs/ExperimentsTab'
 import { LedgerTab } from '@/components/tabs/LedgerTab'
 import { ReportTab } from '@/components/tabs/ReportTab'
+import { AgentActivity } from '@/components/study/AgentActivity'
+
+// Streamed events that change durable state — refetch the study record so the
+// other tabs (ledger, experiments, report) reflect what the agent just did.
+const REFETCH_ON = new Set(['tool.result', 'study.done', 'loop.finished', 'session.ended'])
 
 export function StudyView({ studyId, tab }: { studyId: string; tab: StudyTab }) {
   const query = useStudy(studyId)
@@ -27,6 +33,13 @@ export function StudyView({ studyId, tab }: { studyId: string; tab: StudyTab }) 
 
   const study = detail?.study
   const actions = useStudyActions(studyId, { budgetSeconds: study?.budget?.budget_seconds })
+
+  // Live agent stream — only subscribe while the Live tab is open (subscribing
+  // starts/streams the runtime session; we don't want that on every tab). When a
+  // streamed event mutates durable state, refetch so the other tabs stay current.
+  const stream = useAgentStream(tab === 'live' ? studyId : undefined, (evt) => {
+    if (REFETCH_ON.has(evt.kind)) actions.refresh()
+  })
 
   const banned = useMemo(() => {
     if (!detail) return new Set<string>()
@@ -57,7 +70,11 @@ export function StudyView({ studyId, tab }: { studyId: string; tab: StudyTab }) 
       <StudyHeader studyId={studyId} study={study} runs={runs} flag={flag} tab={tab} />
 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
-        {query.isError ? (
+        {tab === 'live' ? (
+          // The live stream is independent of the study fetch — show it even while
+          // the record is still being created or if the read errored.
+          <AgentActivity events={stream.events} status={stream.status} />
+        ) : query.isError ? (
           <ErrorCard error={query.error} onRetry={() => query.refetch()} />
         ) : !ready || !detail || !study ? (
           <GridSkeleton />
