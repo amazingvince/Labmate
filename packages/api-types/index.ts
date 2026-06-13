@@ -570,6 +570,10 @@ export interface components {
             study_id: string;
             /** @description R2 location of the rendered report. */
             uri: string;
+            /** @description The rendered model-card markdown (present on write_report and GET report). */
+            markdown?: string;
+            /** Format: date-time */
+            generated_at?: string;
             best_run_id?: string;
             baseline_run_id?: string;
             compares_best_to_baseline?: boolean;

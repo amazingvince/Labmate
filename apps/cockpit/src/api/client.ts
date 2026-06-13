@@ -95,6 +95,16 @@ export const api = {
     return post<{ status?: string }>(`/api/studies/${encodeURIComponent(studyId)}/message`, { text })
   },
 
+  /** Latest rendered model card (markdown + provenance). 404 → no report yet. */
+  getReport(studyId: string): Promise<Report> {
+    return request<Report>(`/api/studies/${encodeURIComponent(studyId)}/report`)
+  },
+
+  /** Direct URL to the raw model-card markdown (downloadable / openable). */
+  reportMarkdownUrl(studyId: string): string {
+    return `${API_BASE}/api/studies/${encodeURIComponent(studyId)}/report?format=md`
+  },
+
   recordFeedback(body: Feedback): Promise<Feedback> {
     return post<Feedback>('/api/feedback', body)
   },

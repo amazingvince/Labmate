@@ -1241,6 +1241,8 @@ async function writeReport(env, body) {
     compact({
       study_id: study.id,
       uri: key,
+      markdown: card,
+      generated_at: nowIso(),
       best_run_id: best ? best.id : undefined,
       baseline_run_id: baseline ? baseline.id : undefined,
       compares_best_to_baseline: comparesBestToBaseline,
@@ -1248,6 +1250,54 @@ async function writeReport(env, body) {
       provenance: { dataset_hash: datasetHash, code_hash: codeHash, seed },
     }),
     201,
+  );
+}
+
+/**
+ * Serve the latest rendered model card for a study (public read). Returns the
+ * stored markdown plus its provenance/links from the artifact row. With
+ * ?format=md, returns the raw markdown as text/markdown (linkable/downloadable);
+ * otherwise JSON the cockpit renders inline. 404 when no report exists yet.
+ */
+async function getReport(env, id, url) {
+  const studyRow = await getStudyRow(env, id);
+  if (!studyRow) return notFound(`No study ${id}`);
+  const row = await env.DB.prepare(
+    `SELECT * FROM artifact WHERE study_id = ? AND kind = 'report' ORDER BY created_at DESC LIMIT 1`,
+  )
+    .bind(id)
+    .first();
+  if (!row) return notFound(`No report for ${id}`);
+
+  let markdown = "";
+  if (env.ARTIFACTS) {
+    const obj = await env.ARTIFACTS.get(row.uri);
+    if (obj) markdown = await obj.text();
+  }
+
+  if (url && url.searchParams.get("format") === "md") {
+    return new Response(markdown, {
+      headers: {
+        "content-type": "text/markdown; charset=utf-8",
+        "cache-control": "no-cache",
+        ...CORS,
+      },
+    });
+  }
+
+  const meta = parse(row.meta_json) || {};
+  return json(
+    compact({
+      study_id: id,
+      uri: row.uri,
+      markdown,
+      generated_at: row.created_at,
+      best_run_id: meta.best_run_id || undefined,
+      baseline_run_id: meta.baseline_run_id || undefined,
+      compares_best_to_baseline: meta.compares_best_to_baseline || undefined,
+      reproducible_command: meta.reproducible_command || undefined,
+      provenance: { dataset_hash: row.dataset_hash, code_hash: row.code_hash, seed: row.seed },
+    }),
   );
 }
 
@@ -1362,6 +1412,11 @@ export default {
       // event stream through to the cockpit. Public, like the other reads.
       if (rest.endsWith("/stream")) {
         return proxyAgentStream(env, rest.slice(0, -"/stream".length));
+      }
+      // Latest rendered model card. JSON by default (cockpit reads .markdown), or
+      // raw text/markdown with ?format=md (downloadable / linkable).
+      if (rest.endsWith("/report")) {
+        return getReport(env, rest.slice(0, -"/report".length), url);
       }
       return getStudyDetail(env, rest);
     }

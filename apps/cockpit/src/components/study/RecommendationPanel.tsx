@@ -3,6 +3,7 @@
 import { FileTextIcon, Loader2Icon, TriangleAlertIcon } from 'lucide-react'
 import type { Critique, Report, Study } from '@/api/types'
 import type { StudyActions } from '@/api/hooks'
+import { api } from '@/api/client'
 import { CRITIQUE_LABEL, shortId } from '@/lib/derive'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -79,14 +80,17 @@ export function RecommendationPanel({
                   </Badge>
                 )}
               </div>
-              <a
-                href={report.uri}
-                target="_blank"
-                rel="noreferrer"
-                className="block truncate font-mono text-xs text-brand hover:underline"
-              >
-                {report.uri}
-              </a>
+              {study?.id && (
+                <a
+                  href={api.reportMarkdownUrl(study.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block truncate font-mono text-xs text-brand hover:underline"
+                  title={report.uri}
+                >
+                  {report.uri}
+                </a>
+              )}
               {report.reproducible_command && (
                 <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs">
                   {report.reproducible_command}

@@ -962,6 +962,8 @@ components:
       properties:
         study_id: { type: string }
         uri: { type: string, description: R2 location of the rendered report. }
+        markdown: { type: string, description: The rendered model-card markdown (present on write_report and GET report). }
+        generated_at: { type: string, format: date-time }
         best_run_id: { type: string }
         baseline_run_id: { type: string }
         compares_best_to_baseline: { type: boolean }

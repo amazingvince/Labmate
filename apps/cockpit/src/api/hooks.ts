@@ -13,6 +13,7 @@ import { useToast } from '../components/Toast'
 export const qk = {
   studies: (status?: string) => ['studies', status ?? 'all'] as const,
   study: (id: string) => ['study', id] as const,
+  report: (id: string) => ['report', id] as const,
 }
 
 function hasActiveRun(detail: StudyDetail | undefined): boolean {
@@ -33,6 +34,23 @@ export function useStudy(id: string | undefined) {
     enabled: Boolean(id),
     // Live cockpit: poll only while the agent is actually computing.
     refetchInterval: (query) => (hasActiveRun(query.state.data) ? 4000 : false),
+  })
+}
+
+/** The latest rendered model card for a study. Resolves to null (not an error)
+ *  when no report has been generated yet. */
+export function useReport(id: string | undefined) {
+  return useQuery({
+    queryKey: qk.report(id ?? ''),
+    enabled: Boolean(id),
+    queryFn: async () => {
+      try {
+        return await api.getReport(id as string)
+      } catch (err) {
+        if (err instanceof HttpError && err.status === 404) return null
+        throw err
+      }
+    },
   })
 }
 
@@ -228,6 +246,10 @@ export function useStudyActions(studyId: string, opts?: { budgetSeconds?: number
     mutationFn: () => api.writeReport({ study_id: studyId, report_type: 'model_card' }),
     onSuccess: (report) => {
       dispatch({ t: 'report', studyId, report })
+      // Seed + refetch the report query so the rendered card appears immediately
+      // and survives reload (it reads the stored artifact, not just the overlay).
+      qc.setQueryData(qk.report(studyId), report)
+      qc.invalidateQueries({ queryKey: qk.report(studyId) })
       toast.push('ok', 'Model card generated')
     },
     onError: (err) => toast.push('err', describeError(err)),
