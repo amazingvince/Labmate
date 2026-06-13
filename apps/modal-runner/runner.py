@@ -80,31 +80,33 @@ def _load_dataset(uri: str):
     """
     import pandas as pd
 
-    # A browser-like User-Agent: the default Python-urllib UA is blocked (403) by
-    # Cloudflare Bot Fight Mode on the control-plane zone that serves the dataset.
-    def _fetch(url: str) -> bytes:
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"},
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return resp.read()
-
-    raw = None
-    if uri.startswith("http://") or uri.startswith("https://"):
-        raw = _fetch(uri)
-    else:
-        base = os.environ.get("LABMATE_DATASET_BASE", "").rstrip("/")
-        if os.path.exists(uri):
-            with open(uri, "rb") as f:
-                raw = f.read()
-        elif base:
-            raw = _fetch(f"{base}/{uri.lstrip('/')}")
-        else:
-            raise ValueError(f"Cannot resolve dataset_uri '{uri}'. Provide an http(s) URL or set LABMATE_DATASET_BASE.")
-
+    raw = _dataset_bytes(uri)
     df = pd.read_csv(io.BytesIO(raw))
     return df, hashlib.sha256(raw).hexdigest()[:16]
+
+
+# A browser-like User-Agent: the default Python-urllib UA is 403'd by Cloudflare Bot
+# Fight Mode on the control-plane zone that serves the dataset.
+_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
+
+def _http_get(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return resp.read()
+
+
+def _dataset_bytes(uri: str) -> bytes:
+    """Resolve a dataset_uri (http(s) URL, local path, or key under LABMATE_DATASET_BASE) to bytes."""
+    if uri.startswith("http://") or uri.startswith("https://"):
+        return _http_get(uri)
+    base = os.environ.get("LABMATE_DATASET_BASE", "").rstrip("/")
+    if os.path.exists(uri):
+        with open(uri, "rb") as f:
+            return f.read()
+    if base:
+        return _http_get(f"{base}/{uri.lstrip('/')}")
+    raise ValueError(f"Cannot resolve dataset_uri '{uri}'. Provide an http(s) URL or set LABMATE_DATASET_BASE.")
 
 
 def _split(df, manifest):
@@ -150,7 +152,11 @@ def _preprocessor(df, features):
 
 def _build_estimator(family, seed, params):
     from sklearn.dummy import DummyClassifier
-    from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+    from sklearn.ensemble import (
+        GradientBoostingClassifier,
+        HistGradientBoostingClassifier,
+        RandomForestClassifier,
+    )
     from sklearn.linear_model import LinearRegression, LogisticRegression
 
     params = dict(params or {})
@@ -169,6 +175,10 @@ def _build_estimator(family, seed, params):
         return LinearRegression(**params)
     if family == "random_forest":
         return RandomForestClassifier(**{"random_state": seed, "n_jobs": -1, **params})
+    if family == "gradient_boosting":
+        # Plain sklearn GBM (takes n_estimators/learning_rate/max_depth) — a family
+        # the agent reaches for naturally; distinct from the histogram variant below.
+        return GradientBoostingClassifier(**{"random_state": seed, **params})
     if family in ("hist_gradient_boosting", "xgboost", "lightgbm"):
         # xgboost/lightgbm aren't in the default image; HGB is the safe stand-in.
         return HistGradientBoostingClassifier(**{"random_state": seed, **params})
@@ -280,10 +290,16 @@ def train(manifest: dict) -> dict:
     }
 
 
-@app.function(image=image)
+@app.function(image=image, timeout=1500)
 @modal.fastapi_endpoint(method="POST")
 def launch(manifest: dict):
-    """HTTP entrypoint the Cloudflare Worker calls from /api/experiments/launch."""
+    """HTTP entrypoint the Cloudflare Worker calls. Dual-mode (one web function to
+    stay under the workspace's web-function cap):
+      • payload has `script`  → run agent-authored code in an isolated Modal Sandbox
+      • otherwise (a manifest) → the fixed sklearn trainer
+    """
+    if isinstance(manifest, dict) and manifest.get("script"):
+        return _run_experiment_sandbox(manifest)
     try:
         _validate_manifest(manifest)
     except ValueError as e:
@@ -292,6 +308,106 @@ def launch(manifest: dict):
         return train.remote(manifest)
     except Exception as e:  # surface failures as a recordable, non-crashing result
         return {"status": "failed", "reason": str(e), "provenance": {"code_hash": _CODE_HASH, "seed": manifest.get("split", {}).get("seed")}}
+
+
+# ---------------------------------------------------------------------------
+# Sandbox executor — run an agent-AUTHORED training script in an isolated,
+# network-blocked Modal Sandbox. The agent writes real code (no rigid manifest);
+# Modal is still the only place code runs. The script reads /work/data.csv and
+# writes /work/result.json := {metrics:{..numbers..}, params:{...}, artifacts:{...}}.
+# We keep lightweight guardrails on the agent's DECLARED metadata (banned columns,
+# tune_on != test, seed) and stamp provenance (dataset_hash, code_hash, seed).
+# ---------------------------------------------------------------------------
+
+RESULT_CONTRACT = (
+    "Read the CSV at /work/data.csv. Do a deterministic split FIRST (use the declared "
+    "seed), tune only on validation, exclude banned/leaky columns. Write your result to "
+    "/work/result.json as {\"metrics\": {<name>: <number>, ...}, \"params\": {...}, "
+    "\"artifacts\": {...}}. Print nothing sensitive."
+)
+
+
+def _validate_declared(declared: dict) -> None:
+    feats = list(declared.get("features", []) or [])
+    banned = set(declared.get("banned_columns", []) or [])
+    leaked = sorted(c for c in feats if c in banned)
+    if leaked:
+        raise ValueError(f"banned/leaky columns present in declared features: {', '.join(leaked)}")
+    if str(declared.get("tune_on", "") or "").strip().lower() == "test":
+        raise ValueError("tuning on the test split is forbidden; use tune_on=validation")
+    if declared.get("seed") is None:
+        raise ValueError("declared.seed is required (reproducibility)")
+
+
+def _run_experiment_sandbox(payload: dict):
+    """Execute the agent's script in a fresh, network-blocked Modal Sandbox and
+    return a recordable result. Called by `launch` when the payload carries a script."""
+    script = (payload or {}).get("script") or ""
+    declared = (payload or {}).get("declared", {}) or {}
+    if not script.strip():
+        return {"status": "rejected", "reason": "script is required"}
+    try:
+        _validate_declared(declared)
+    except ValueError as e:
+        return {"status": "rejected", "reason": str(e)}
+    try:
+        raw = _dataset_bytes(payload["dataset_uri"])
+    except Exception as e:
+        return {"status": "failed", "reason": f"dataset fetch failed: {e}"}
+
+    dataset_hash = hashlib.sha256(raw).hexdigest()[:16]
+    code_hash = hashlib.sha256(script.encode("utf-8")).hexdigest()[:12]
+    seed = declared.get("seed")
+
+    sb = modal.Sandbox.create(
+        app=app,
+        image=image,
+        timeout=900,
+        block_network=True,  # the agent's arbitrary code cannot reach the network
+        cpu=2.0,
+        memory=4096,
+        workdir="/work",
+    )
+    try:
+        sb.mkdir("/work", parents=True)
+        with sb.open("/work/data.csv", "wb") as f:
+            f.write(raw)
+        with sb.open("/work/run.py", "w") as f:
+            f.write(script)
+        proc = sb.exec("python", "/work/run.py", timeout=840)
+        out = proc.stdout.read()
+        err = proc.stderr.read()
+        proc.wait()
+        rc = proc.returncode
+        result_text = ""
+        try:
+            with sb.open("/work/result.json", "r") as f:
+                result_text = f.read()
+        except Exception:
+            result_text = ""
+    finally:
+        sb.terminate()
+
+    if not result_text:
+        tail = (err or out or "").strip()[-900:]
+        return {"status": "failed", "reason": f"script did not write /work/result.json (exit {rc}). stderr: {tail}"}
+    try:
+        result = json.loads(result_text)
+    except Exception as e:
+        return {"status": "failed", "reason": f"/work/result.json is not valid JSON: {e}"}
+
+    metrics = {
+        k: round(float(v), 6)
+        for k, v in (result.get("metrics") or {}).items()
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    }
+    return {
+        "status": "completed",
+        "metrics": metrics,
+        "params": result.get("params", {}) or {},
+        "artifacts": result.get("artifacts", {}) or {},
+        "provenance": {"dataset_hash": dataset_hash, "code_hash": code_hash, "seed": seed},
+    }
 
 
 if __name__ == "__main__":
