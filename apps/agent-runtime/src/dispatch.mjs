@@ -16,7 +16,7 @@
  */
 
 export function makeDispatcher(deps) {
-  const { controlPlane, modal, onApprovalNeeded, autoApprove = false } = deps;
+  const { controlPlane, modal, onApprovalNeeded, autoApprove = false, approvalDelayMs = 0 } = deps;
 
   /** @type {Record<string, (input: any) => Promise<any>>} */
   const handlers = {
@@ -37,6 +37,11 @@ export function makeDispatcher(deps) {
       const res = await controlPlane.post("/api/approvals/request", input);
       if (res?.error) return res; // relay control-plane failure to the agent
       if (onApprovalNeeded) await onApprovalNeeded(input, res);
+      // Brief, visible approval window: pause (a human may approve in the cockpit
+      // during it) before auto-granting. Never blocks indefinitely.
+      if (autoApprove && approvalDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, approvalDelayMs));
+      }
       // Autonomous demo: auto-grant within budget by recording a REAL approval
       // feedback (the only thing launch_experiment's 402 gate accepts). The gate
       // is not bypassed — we satisfy it with a genuine, ledgered approval whose

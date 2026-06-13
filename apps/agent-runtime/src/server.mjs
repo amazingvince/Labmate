@@ -58,7 +58,14 @@ async function startStudy(studyId) {
     controlPlane,
     modal,
     autoApprove: config.autoApprove,
-    onApprovalNeeded: async (input, res) => emitter(studyId)({ kind: "approval.needed", input, res }),
+    approvalDelayMs: config.approvalDelayMs,
+    onApprovalNeeded: async (input, res) =>
+      emitter(studyId)({
+        kind: "approval.needed",
+        input,
+        res,
+        auto_approve_in_ms: config.autoApprove ? config.approvalDelayMs : null,
+      }),
   });
 
   // Capture the session id the moment the loop creates it, so a human can inject

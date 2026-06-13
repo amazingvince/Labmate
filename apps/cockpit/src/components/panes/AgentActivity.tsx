@@ -75,9 +75,12 @@ function nodeFor(evt: AgentEvent): Node {
     case 'agent.activity': {
       const text = narration(evt.event)
       if (!text) return null
-      return { color: 'var(--cyan)', glyph: '◇', type: 'AGENT', body: <span>{text}</span> }
+      return { color: 'var(--cyan)', glyph: '◇', type: 'AGENT', body: <span className="agent-narr">{text}</span> }
     }
-    case 'tool.use':
+    case 'tool.use': {
+      const input = (evt.input ?? {}) as Record<string, unknown>
+      const manifest = (input.manifest ?? {}) as Record<string, unknown>
+      const script = typeof manifest.script === 'string' ? manifest.script : null
       return {
         color: 'var(--cyan-dim)',
         glyph: '🔧',
@@ -85,10 +88,22 @@ function nodeFor(evt: AgentEvent): Node {
         body: (
           <span>
             <b>{evt.name}</b>
-            {evt.input != null && <span className="parse-hint"> ({argsPreview(evt.input)})</span>}
+            {script ? (
+              // The rich bit: the actual training code the agent authored for the sandbox.
+              <details className="agent-script">
+                <summary className="parse-hint">
+                  features={JSON.stringify((manifest.features as unknown[]) ?? [])} · tune_on=
+                  {String(manifest.tune_on ?? 'validation')} · {script.split('\n').length} lines — view script
+                </summary>
+                <pre className="agent-script__code">{script}</pre>
+              </details>
+            ) : (
+              evt.input != null && <span className="parse-hint"> ({argsPreview(evt.input)})</span>
+            )}
           </span>
         ),
       }
+    }
     case 'tool.result': {
       const { error, status } = resultError(evt.result)
       if (error) {
@@ -104,13 +119,23 @@ function nodeFor(evt: AgentEvent): Node {
           ),
         }
       }
+      const r = (evt.result ?? {}) as Record<string, unknown>
+      const metrics = (r.metrics ?? {}) as Record<string, unknown>
+      const mEntries = Object.entries(metrics).filter(([, v]) => typeof v === 'number') as [string, number][]
       return {
         color: 'var(--st-completed)',
         glyph: '✓',
         type: 'TOOL OK',
         body: (
           <span>
-            <b>{evt.name}</b> ok
+            <b>{evt.name}</b>
+            {r.id ? <span className="parse-hint"> {shortId(String(r.id), 6)}</span> : ' ok'}
+            {mEntries.length ? (
+              <span className="agent-metrics">
+                {' '}
+                {mEntries.map(([k, v]) => `${k}=${v.toFixed(3)}`).join('  ')}
+              </span>
+            ) : null}
           </span>
         ),
       }

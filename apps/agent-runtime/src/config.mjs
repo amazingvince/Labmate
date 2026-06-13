@@ -36,6 +36,11 @@ export const config = {
   // human to approve in the cockpit. The gate itself is never bypassed.
   autoApprove: read("LABMATE_AUTO_APPROVE", { fallback: "true" }) === "true",
 
+  // How long an auto-approval "waits" before being granted — a brief, visible
+  // approval window (a human CAN approve in the cockpit during it) that never blocks
+  // the run. Default 10s.
+  approvalDelayMs: Number(read("LABMATE_APPROVAL_DELAY_MS", { fallback: "10000" })),
+
   // Labmate control plane (Cloudflare Worker) + internal token.
   controlPlaneUrl: () =>
     read("LABMATE_PUBLIC_URL", { fallback: "http://127.0.0.1:8787" }),

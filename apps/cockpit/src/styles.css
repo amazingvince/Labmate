@@ -1148,6 +1148,37 @@ a {
   padding-bottom: 14px;
   border-bottom: 1px solid var(--line-hair);
 }
+/* Rich agent output: full narration (wraps), the authored script, run metrics. */
+.agent-narr {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agent-script {
+  margin-top: 4px;
+}
+.agent-script > summary {
+  cursor: pointer;
+  user-select: none;
+}
+.agent-script__code {
+  margin: 6px 0 2px;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--bg-sunken, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--line-hair);
+  border-radius: 4px;
+  font-family: var(--f-mono);
+  font-size: var(--fs-micro);
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--text);
+}
+.agent-metrics {
+  font-family: var(--f-mono);
+  font-size: var(--fs-micro);
+  color: var(--st-completed);
+}
 .agent-feed__head {
   display: flex;
   align-items: center;

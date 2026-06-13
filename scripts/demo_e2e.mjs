@@ -100,21 +100,37 @@ const brief = {
   budget: { max_trials: 20, budget_seconds: 600 },
 };
 
+const indent = (s, pad = "        ") => String(s ?? "").split("\n").map((l) => pad + l).join("\n");
+
 function log(evt) {
   const t = new Date().toLocaleTimeString();
   const k = evt.kind ?? evt.type ?? "event";
   if (k === "agent.activity") {
     const content = evt.event?.content ?? evt.event?.message?.content;
-    const text = Array.isArray(content) ? (content.find((b) => b.type === "text")?.text ?? "") : "";
-    if (text) console.info(`  ${t} 🧠 ${text.slice(0, 160)}`);
+    const text = Array.isArray(content) ? content.filter((b) => b.type === "text").map((b) => b.text).join("\n") : "";
+    if (text.trim()) console.info(`  ${t} 🧠\n${indent(text.trim())}`);
   } else if (k === "tool.use") {
-    console.info(`  ${t} 🔧 ${evt.name}(${JSON.stringify(evt.input).slice(0, 120)})`);
+    const inp = evt.input ?? {};
+    const m = inp.manifest ?? {};
+    console.info(`  ${t} 🔧 ${evt.name}`);
+    if (evt.name === "launch_experiment" && m.script) {
+      // The rich bit: the actual training code the agent authored for the sandbox.
+      console.info(indent(`hypothesis=${m.hypothesis_id ?? "?"} features=${JSON.stringify(m.features ?? [])} tune_on=${m.tune_on ?? "validation"}`, "        · "));
+      console.info(indent(m.script, "        | "));
+    } else {
+      const s = JSON.stringify(inp);
+      console.info(indent(s.length > 600 ? s.slice(0, 600) + "…" : s, "        · "));
+    }
   } else if (k === "tool.result") {
     const r = evt.result ?? {};
-    const tag = r.error ? `⚠️ ${r.error}` : (r.id ?? "ok");
-    console.info(`  ${t} ↩️  ${evt.name} → ${tag}`);
+    if (r.error) console.info(`  ${t} ↩️  ${evt.name} → ⚠️ ${r.error}${r.http_status ? ` (${r.http_status})` : ""}${r.detail ? ": " + String(r.detail).slice(0, 200) : ""}`);
+    else if (r.metrics && Object.keys(r.metrics).length) console.info(`  ${t} ↩️  ${evt.name} → ${r.id ?? "ok"}  ${Object.entries(r.metrics).map(([kk, vv]) => `${kk}=${typeof vv === "number" ? vv.toFixed(3) : vv}`).join("  ")}`);
+    else console.info(`  ${t} ↩️  ${evt.name} → ${r.id ?? r.status ?? "ok"}`);
   } else if (k === "approval.needed") {
-    console.info(`  ${t} ⏳ approval needed: ${evt.input?.reason ?? ""}`);
+    const wait = evt.auto_approve_in_ms ? ` (auto-approving in ${Math.round(evt.auto_approve_in_ms / 1000)}s)` : "";
+    console.info(`  ${t} ⏳ approval requested${wait}: ${evt.input?.reason ?? ""}`);
+  } else if (k === "nudge") {
+    console.info(`  ${t} 👉 nudge: review and continue, or stop`);
   } else if (k === "study.done" || k === "loop.finished") {
     console.info(`  ${t} ✅ ${k}`);
   } else if (k === "loop.error") {
