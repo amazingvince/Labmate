@@ -1142,6 +1142,53 @@ a {
   animation: typein 0.26s ease-out;
 }
 
+/* ---- live AGENT ACTIVITY feed (streamed, sits above the ledger in §04) ---- */
+.agent-feed {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line-hair);
+}
+.agent-feed__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.agent-feed__title {
+  font-family: var(--f-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.agent-feed__lamp {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--f-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.agent-feed__lamp.is-connected {
+  color: var(--st-running);
+}
+.agent-feed__lamp.is-connected .agent-feed__dot {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.agent-feed__lamp.is-error {
+  color: var(--amber);
+}
+.agent-feed__lamp.is-error .agent-feed__dot {
+  animation: breathe 2s ease-in-out infinite;
+}
+.agent-feed__dot {
+  font-size: 0.6rem;
+  line-height: 1;
+}
+
 /* ============================================================================
    DOCK — §06 recommendation + feedback
    ============================================================================ */

@@ -9,10 +9,12 @@
  * critiques → decisions).
  */
 import type {
+  Artifact,
   Critique,
   CritiqueKind,
   Decision,
   Feedback,
+  Report,
   Run,
   RunStatus,
   Study,
@@ -248,4 +250,33 @@ export function shortId(id: string | undefined, len = 6): string {
 
 export function primaryMetricKey(study: Study): string | undefined {
   return study.metric || undefined
+}
+
+/**
+ * The latest report artifact reconstituted as a Report, so a finished study shows
+ * the model-card link in the dock even if the human never clicked "Generate report"
+ * (e.g. the agent wrote it). Prefers the most recent artifact of kind=report.
+ */
+export function reportFromArtifacts(detail: StudyDetail): Report | undefined {
+  const reports = (detail.artifacts ?? []).filter((a: Artifact) => a.kind === 'report')
+  if (reports.length === 0) return undefined
+  const latest = reports.reduce((a, b) =>
+    (a.created_at ?? '') >= (b.created_at ?? '') ? a : b,
+  )
+  const meta = (latest.meta as Record<string, unknown> | undefined) ?? {}
+  return {
+    study_id: latest.study_id,
+    uri: latest.uri,
+    best_run_id: typeof meta.best_run_id === 'string' ? meta.best_run_id : undefined,
+    baseline_run_id: typeof meta.baseline_run_id === 'string' ? meta.baseline_run_id : undefined,
+    compares_best_to_baseline:
+      typeof meta.compares_best_to_baseline === 'boolean' ? meta.compares_best_to_baseline : undefined,
+    reproducible_command:
+      typeof meta.reproducible_command === 'string' ? meta.reproducible_command : undefined,
+    provenance: {
+      dataset_hash: latest.dataset_hash,
+      code_hash: latest.code_hash,
+      seed: latest.seed,
+    },
+  }
 }

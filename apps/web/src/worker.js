@@ -10,6 +10,8 @@
  *   POST /api/studies               create_study           -> 201 { id, status }
  *   GET  /api/studies               list studies (public)  -> 200 { studies }
  *   GET  /api/studies/:id           study detail (public)  -> 200 StudyDetail | 404
+ *   GET  /api/studies/:id/stream    live agent SSE (public) -> 200 text/event-stream
+ *   POST /api/studies/:id/message   suggest_change          -> 202 { status } | 503
  *   POST /api/profile               profile_dataset        -> 200 DatasetVersion | 404
  *   POST /api/experiments/propose   propose_experiments    -> 200 { hypotheses }
  *   POST /api/approvals/request     request_approval       -> 200 { approval_id, status }
@@ -1090,6 +1092,29 @@ function triggerAgentStart(env, studyId) {
   }).catch(() => {});
 }
 
+/**
+ * Inject a human "suggest changes" message into the running Managed Agents session
+ * by proxying {text} to the agent runtime. Returns the runtime's JSON response, or
+ * a 503 { error: "runtime_unavailable" } when no runtime is wired.
+ */
+async function proxyAgentMessage(env, studyId, body) {
+  const base = (env.AGENT_RUNTIME_URL || "").replace(/\/$/, "");
+  if (!base) return fail(503, "runtime_unavailable", "AGENT_RUNTIME_URL is not configured.");
+  const text = body && typeof body.text === "string" ? body.text : "";
+  if (!text.trim()) return fail(400, "bad_request", "text is required.");
+  try {
+    const res = await fetch(`${base}/agent/${encodeURIComponent(studyId)}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json().catch(() => null);
+    return json(data ?? { status: res.ok ? "queued" : "error" }, res.status);
+  } catch (e) {
+    return fail(503, "runtime_unavailable", String(e?.message ?? e));
+  }
+}
+
 /** Proxy the agent runtime's SSE event stream through to the cockpit (public). */
 async function proxyAgentStream(env, studyId) {
   const sseHeaders = {
@@ -1158,6 +1183,17 @@ export default {
       if (method === "POST") {
         body = await request.json().catch(() => null);
         if (body === null) return fail(400, "bad_request", "Body must be valid JSON.");
+      }
+      // Path-param write: POST /api/studies/{id}/message injects a human "suggest
+      // changes" user.message into the running session (token-required, like the
+      // other writes). Matched here because it carries a path param the switch can't.
+      if (method === "POST" && /^\/api\/studies\/[^/]+\/message$/.test(pathname)) {
+        const id = decodeURIComponent(pathname.slice("/api/studies/".length, -"/message".length));
+        try {
+          return await proxyAgentMessage(env, id, body);
+        } catch (e) {
+          return serverError(env, "internal_error", e);
+        }
       }
       try {
         switch (`${method} ${pathname}`) {

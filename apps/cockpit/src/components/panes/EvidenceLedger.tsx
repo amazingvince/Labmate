@@ -15,6 +15,8 @@ import {
   shortId,
 } from '../../lib/derive'
 import { EmptyState, Flatline, ParsedChips, SkeletonRows } from '../primitives'
+import { AgentActivity } from './AgentActivity'
+import type { AgentStream } from '../../api/useAgentStream'
 
 const DECISION_GLYPH: Record<DecisionAction, string> = {
   promote: '↑',
@@ -118,17 +120,28 @@ export function EvidenceLedger({
   detail,
   metricKey,
   loading = false,
+  stream,
 }: {
   detail?: StudyDetail
   metricKey?: string
   loading?: boolean
+  stream?: AgentStream
 }) {
   const flag = detail ? methodologicalFlag(detail) : undefined
   const entries = detail ? buildLedger(detail) : []
+  // Show the live agent feed once there is something to show (events or an
+  // explicit runtime state); otherwise the ledger renders on its own as before.
+  const showFeed = Boolean(
+    stream && (stream.events.length > 0 || stream.status === 'runtime_unavailable'),
+  )
 
   const inner = () => {
     if (loading) return <SkeletonRows rows={6} />
     if (!detail || entries.length === 0) {
+      // Even with an empty server ledger, surface the live agent feed if it's running.
+      if (showFeed && stream) {
+        return <AgentActivity events={stream.events} status={stream.status} />
+      }
       return (
         <EmptyState label="Ledger awaiting first signal">
           <Flatline />
@@ -137,6 +150,7 @@ export function EvidenceLedger({
     }
     return (
       <>
+        {showFeed && stream && <AgentActivity events={stream.events} status={stream.status} />}
         {flag && (
           <div className="alert-pin" role="alert" aria-live="polite">
             <span className="alert-pin__glyph" aria-hidden="true">

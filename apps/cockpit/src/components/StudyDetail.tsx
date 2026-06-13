@@ -1,8 +1,15 @@
 /** The study-detail cockpit: status strip, the etched four-pane grid (brief,
  *  data contract, experiment cards, run table, evidence ledger), and the dock. */
-import { useMemo } from 'react'
-import { useStudy, useStudyActions } from '../api/hooks'
-import { deriveBannedColumns, methodologicalFlag, primaryMetricKey } from '../lib/derive'
+import { useCallback, useMemo } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { qk, useStudy, useStudyActions } from '../api/hooks'
+import { useAgentStream, type AgentEvent } from '../api/useAgentStream'
+import {
+  deriveBannedColumns,
+  methodologicalFlag,
+  primaryMetricKey,
+  reportFromArtifacts,
+} from '../lib/derive'
 import { mergeStudyDetail, useOverlay } from '../state/overlay'
 import { ErrorState } from './primitives'
 import { StatusStrip } from './panes/StatusStrip'
@@ -16,6 +23,19 @@ import { Dock } from './panes/Dock'
 export function StudyDetail({ studyId }: { studyId: string }) {
   const query = useStudy(studyId)
   const { overlay } = useOverlay(studyId)
+  const qc = useQueryClient()
+
+  // Live agent activity (SSE). A tool.result or study.done means the ledger / run
+  // table likely changed on the server — refetch the study so they update promptly.
+  const onAgentEvent = useCallback(
+    (evt: AgentEvent) => {
+      if (evt.kind === 'tool.result' || evt.kind === 'study.done') {
+        qc.invalidateQueries({ queryKey: qk.study(studyId) })
+      }
+    },
+    [qc, studyId],
+  )
+  const stream = useAgentStream(studyId, onAgentEvent)
 
   const detail = useMemo(
     () => (query.data ? mergeStudyDetail(query.data, overlay) : undefined),
@@ -37,6 +57,12 @@ export function StudyDetail({ studyId }: { studyId: string }) {
   const loading = query.isLoading
   const runs = detail?.runs ?? []
   const computing = runs.some((r) => r.status === 'running')
+  // A fresh generate-report overlay wins; otherwise surface a persisted report
+  // artifact so a done study shows the model-card link without a manual click.
+  const report = useMemo(
+    () => overlay.report ?? (detail ? reportFromArtifacts(detail) : undefined),
+    [overlay.report, detail],
+  )
 
   return (
     <div className="app">
@@ -53,7 +79,7 @@ export function StudyDetail({ studyId }: { studyId: string }) {
             study={study}
             detail={detail}
             banned={banned}
-            report={overlay.report}
+            report={report}
             grade={overlay.grade}
             loading={loading}
           />
@@ -80,7 +106,12 @@ export function StudyDetail({ studyId }: { studyId: string }) {
             metricKey={metricKey}
             loading={loading}
           />
-          <EvidenceLedger detail={detail} metricKey={metricKey} loading={loading} />
+          <EvidenceLedger
+            detail={detail}
+            metricKey={metricKey}
+            loading={loading}
+            stream={stream}
+          />
         </div>
       )}
 
@@ -89,7 +120,7 @@ export function StudyDetail({ studyId }: { studyId: string }) {
         recommendation={detail?.recommendation}
         flag={flag}
         actions={actions}
-        report={overlay.report}
+        report={report}
       />
     </div>
   )

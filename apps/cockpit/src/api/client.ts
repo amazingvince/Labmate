@@ -96,4 +96,14 @@ export const api = {
   gradeStudy(body: { study_id: string }): Promise<GradeResult> {
     return post<GradeResult>('/api/grade', body)
   },
+
+  /** Absolute URL of the public agent-activity SSE stream (EventSource can't send headers). */
+  streamUrl(studyId: string): string {
+    return `${API_BASE}/api/studies/${encodeURIComponent(studyId)}/stream`
+  },
+
+  /** Inject a human "suggest changes" message into the live session (token-required write). */
+  suggestChange(studyId: string, text: string): Promise<{ status?: string }> {
+    return post<{ status?: string }>(`/api/studies/${encodeURIComponent(studyId)}/message`, { text })
+  },
 }

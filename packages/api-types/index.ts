@@ -74,6 +74,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/studies/{studyId}/message": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example study_01HZX */
+                studyId: components["parameters"]["StudyId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inject a human "suggest changes" message into the live session
+         * @description Steering for a live study. The control plane proxies the text to the agent runtime, which injects it as a user.message into the running Managed Agents session so it affects the next step (not just a ledger note). The cockpit also records the same text via /api/feedback for the evidence ledger. Returns 503 { error: "runtime_unavailable" } when no runtime is wired.
+         */
+        post: operations["suggestChange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/profile": {
         parameters: {
             query?: never;
@@ -726,6 +749,58 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": string;
+                };
+            };
+        };
+    };
+    suggestChange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example study_01HZX */
+                studyId: components["parameters"]["StudyId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The human's natural-language steering message. */
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Message queued for injection into the session. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        status?: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description The session is not ready yet (no live session to inject into). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The agent runtime is not configured or unreachable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
         };

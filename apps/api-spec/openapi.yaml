@@ -152,6 +152,54 @@ paths:
               schema:
                 type: string
 
+  /api/studies/{studyId}/message:
+    parameters:
+      - $ref: "#/components/parameters/StudyId"
+    post:
+      tags: [studies]
+      operationId: suggestChange
+      summary: Inject a human "suggest changes" message into the live session
+      description: >
+        Steering for a live study. The control plane proxies the text to the agent
+        runtime, which injects it as a user.message into the running Managed Agents
+        session so it affects the next step (not just a ledger note). The cockpit
+        also records the same text via /api/feedback for the evidence ledger.
+        Returns 503 { error: "runtime_unavailable" } when no runtime is wired.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  description: The human's natural-language steering message.
+      responses:
+        "202":
+          description: Message queued for injection into the session.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: The session is not ready yet (no live session to inject into).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: The agent runtime is not configured or unreachable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/profile:
     post:
       tags: [studies]
