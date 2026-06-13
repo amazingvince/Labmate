@@ -64,8 +64,10 @@ if (!get("MODAL_RUNNER_URL")) {
   console.warn("⚠️  MODAL_RUNNER_URL not set in this env — ensure the control-plane Worker has it (wrangler var / .dev.vars), or launches will 502.");
 }
 
+// Everything goes through the control plane (the deployed Worker), which triggers
+// the agent runtime on study create and proxies its SSE — so this driver works
+// whether the runtime is local or Modal-hosted, with no direct runtime address.
 const controlPlane = (get("LABMATE_PUBLIC_URL", "http://127.0.0.1:8787")).replace(/\/$/, "");
-const runtime = `http://127.0.0.1:${get("AGENT_RUNTIME_PORT", "8990")}`;
 const token = get("LABMATE_INTERNAL_TOKEN");
 const MAX_WAIT_MS = 1000 * 60 * 12; // 12 minutes
 
@@ -123,8 +125,11 @@ function log(evt) {
 }
 
 async function tailStream(studyId, onDone) {
-  // Minimal SSE client over fetch (Node 18+ streaming body).
-  const res = await fetch(`${runtime}/agent/${encodeURIComponent(studyId)}/stream`);
+  // Minimal SSE client over fetch (Node 18+ streaming body). Subscribing to the
+  // control plane's stream also starts the study's session if it hasn't begun.
+  const res = await fetch(`${controlPlane}/api/studies/${encodeURIComponent(studyId)}/stream`, {
+    headers: { accept: "text/event-stream" },
+  });
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -160,24 +165,16 @@ async function tailStream(studyId, onDone) {
 async function main() {
   console.info("Labmate end-to-end demo");
   console.info("=======================");
-  console.info(`control plane: ${controlPlane}`);
-  console.info(`agent runtime: ${runtime}\n`);
+  console.info(`control plane: ${controlPlane}\n`);
 
-  console.info("1. Creating the seeded SLA-breach study...");
+  console.info("1. Creating the seeded SLA-breach study (this triggers the agent session)...");
   const created = await cp("/api/studies", brief);
   const studyId = created.id;
   console.info(`   study_id = ${studyId}\n`);
 
-  console.info("2. Starting the managed agent session...");
-  await fetch(`${runtime}/agent/start`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ study_id: studyId }),
-  });
-
-  console.info("3. Live agent activity:\n");
+  console.info("2. Live agent activity (control plane proxies the runtime's stream):\n");
   await tailStream(studyId, async () => {
-    console.info("\n4. Final grade + report:");
+    console.info("\n3. Final grade + report:");
     const grade = await cp("/api/grade", { study_id: studyId });
     console.info(`   verdict: ${grade.verdict}`);
     try {
