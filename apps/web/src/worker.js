@@ -449,6 +449,18 @@ function datasetUriFor(env, study) {
   return base ? `${base}/${key}` : key;
 }
 
+/** Serve a dataset CSV from R2 (public) under datasets/<name>. `name` is e.g.
+ *  "sla_tickets.csv"; sanitized to a flat filename to prevent traversal. */
+async function serveDataset(env, name) {
+  const safe = String(name).replace(/[^a-zA-Z0-9._-]/g, "");
+  if (!safe || !env.ARTIFACTS) return notFound("dataset not found");
+  const obj = await env.ARTIFACTS.get(`datasets/${safe}`);
+  if (!obj) return notFound(`dataset ${safe} not found`);
+  return new Response(obj.body, {
+    headers: { "content-type": "text/csv", "cache-control": "public, max-age=300", ...CORS },
+  });
+}
+
 async function profileDataset(env, body) {
   const studyRow = await getStudyRow(env, body.study_id);
   if (!studyRow) return notFound(`No study ${body.study_id}`);
@@ -1162,6 +1174,13 @@ export default {
     // Public landing page (the real cockpit is the front-end track's apps/cockpit).
     if (method === "GET" && pathname === "/") {
       return new Response(LANDING_HTML, { headers: { "content-type": "text/html", ...CORS } });
+    }
+
+    // Public: serve a study's dataset CSV from R2 so the (cloud) Modal runner can
+    // fetch it. dataset_uri resolves to {LABMATE_DATASET_BASE}/{dataset_id}.csv, and
+    // LABMATE_DATASET_BASE points at "{this Worker}/data" in the deployed env.
+    if (method === "GET" && pathname.startsWith("/data/")) {
+      return serveDataset(env, pathname.slice("/data/".length));
     }
 
     // Public reads

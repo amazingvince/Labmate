@@ -2,6 +2,13 @@ name = "labmate"
 main = "src/worker.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
+account_id = "f7759969c2ba490558d2bcd889d54d5d"
+
+# Custom domain for the deployed control plane (LABMATE_PUBLIC_URL). Requires
+# amazingvince.com to be a zone on this account; `wrangler deploy` auto-provisions
+# the DNS record + TLS cert. Ignored by `wrangler dev` (local). Comment this out to
+# deploy to the default labmate.<account>.workers.dev instead.
+routes = [{ pattern = "labmate.amazingvince.com", custom_domain = true }]
 
 # schema.sql is imported as a Text module so the Worker can self-apply the ledger
 # schema on first request (in addition to `wrangler d1 execute --file=./schema.sql`).
