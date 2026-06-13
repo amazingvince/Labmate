@@ -549,6 +549,9 @@ components:
           type: string
           enum: [open, done, stopped]
           default: open
+        constraints:
+          $ref: "#/components/schemas/Constraints"
+        created_at: { type: string, format: date-time }
 
     CreateStudyRequest:
       type: object
@@ -631,6 +634,13 @@ components:
           items: { $ref: "#/components/schemas/ColumnProfile" }
         target_definition: { type: string }
         split_strategy: { $ref: "#/components/schemas/SplitStrategy" }
+        leakage_candidates:
+          type: array
+          items: { type: string }
+        banned_columns:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
 
     Hypothesis:
       type: object
@@ -648,6 +658,7 @@ components:
         status:
           type: string
           enum: [proposed, approved, rejected]
+        created_at: { type: string, format: date-time }
 
     ModelSpec:
       type: object
@@ -747,6 +758,7 @@ components:
         dataset_hash: { type: string }
         code_hash: { type: string }
         seed: { type: integer }
+        created_at: { type: string, format: date-time }
 
     Critique:
       type: object
@@ -763,6 +775,7 @@ components:
         led_to_decision:
           type: string
           enum: [promote, reject, rerun, branch, stop]
+        created_at: { type: string, format: date-time }
 
     Decision:
       type: object
@@ -776,6 +789,7 @@ components:
         promoted_run_id: { type: string }
         rejected_run_id: { type: string }
         reason: { type: string }
+        created_at: { type: string, format: date-time }
 
     Feedback:
       type: object
@@ -793,6 +807,7 @@ components:
           type: object
           additionalProperties: true
           description: "e.g. { primary_metric: 'recall', guardrail: 'false_positive_rate <= 0.20' }"
+        created_at: { type: string, format: date-time }
 
     ApprovalRequest:
       type: object
@@ -816,6 +831,10 @@ components:
         dataset_hash: { type: string }
         code_hash: { type: string }
         seed: { type: integer }
+        meta:
+          type: object
+          additionalProperties: true
+        created_at: { type: string, format: date-time }
 
     Report:
       type: object

@@ -174,6 +174,7 @@ function mapStudy(row) {
     budget: parse(row.budget_json) || { max_trials: 20, budget_seconds: 600 },
     rubric: row.rubric || "docs/rubric.json",
     status: row.status || "open",
+    constraints: parse(row.constraints_json) || undefined,
     created_at: row.created_at,
   });
 }

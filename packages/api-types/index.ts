@@ -283,6 +283,9 @@ export interface components {
              * @enum {string}
              */
             status: "open" | "done" | "stopped";
+            constraints?: components["schemas"]["Constraints"];
+            /** Format: date-time */
+            created_at?: string;
         };
         CreateStudyRequest: {
             brief: string;
@@ -339,6 +342,10 @@ export interface components {
             columns?: components["schemas"]["ColumnProfile"][];
             target_definition?: string;
             split_strategy?: components["schemas"]["SplitStrategy"];
+            leakage_candidates?: string[];
+            banned_columns?: string[];
+            /** Format: date-time */
+            created_at?: string;
         };
         Hypothesis: {
             id: string;
@@ -351,6 +358,8 @@ export interface components {
             expected_outcome?: string;
             /** @enum {string} */
             status?: "proposed" | "approved" | "rejected";
+            /** Format: date-time */
+            created_at?: string;
         };
         ModelSpec: {
             /** @enum {string} */
@@ -436,6 +445,8 @@ export interface components {
             dataset_hash?: string;
             code_hash?: string;
             seed?: number;
+            /** Format: date-time */
+            created_at?: string;
         };
         Critique: {
             id: string;
@@ -447,6 +458,8 @@ export interface components {
             recommendation?: string;
             /** @enum {string} */
             led_to_decision?: "promote" | "reject" | "rerun" | "branch" | "stop";
+            /** Format: date-time */
+            created_at?: string;
         };
         Decision: {
             id: string;
@@ -456,6 +469,8 @@ export interface components {
             promoted_run_id?: string;
             rejected_run_id?: string;
             reason?: string;
+            /** Format: date-time */
+            created_at?: string;
         };
         Feedback: {
             id?: string;
@@ -470,6 +485,8 @@ export interface components {
             parsed_constraints?: {
                 [key: string]: unknown;
             };
+            /** Format: date-time */
+            created_at?: string;
         };
         ApprovalRequest: {
             study_id: string;
@@ -486,6 +503,11 @@ export interface components {
             dataset_hash?: string;
             code_hash?: string;
             seed?: number;
+            meta?: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            created_at?: string;
         };
         Report: {
             study_id: string;

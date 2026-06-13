@@ -3,8 +3,10 @@
  * render: metric formatting, guardrail derivation, run/critique linking, the
  * merged ledger feed, and a best-effort NL→constraint parse for the feedback box.
  *
- * NOTE: the API carries no timestamps, so the ledger is ordered by event type
- * then array sequence (feedback → runs → critiques → decisions), not by clock.
+ * NOTE: when the API supplies `created_at` (spec: Run/Critique/Decision/Feedback),
+ * the ledger sorts chronologically; against a timestamp-less source (e.g. the Prism
+ * mock) it falls back to event type then array sequence (feedback → runs →
+ * critiques → decisions).
  */
 import type {
   Critique,
@@ -68,9 +70,13 @@ export function runsForHypothesis(runs: Run[], hypothesisId: string): Run[] {
   return runs.filter((r) => r.hypothesis_id === hypothesisId)
 }
 
-/** No timestamps in the API — "latest" is the last run in array order. */
+/** Latest run by `created_at` when every run carries one; else last in array order. */
 export function latestRun(runs: Run[]): Run | undefined {
-  return runs.length ? runs[runs.length - 1] : undefined
+  if (!runs.length) return undefined
+  if (runs.every((r) => r.created_at)) {
+    return runs.reduce((a, b) => (a.created_at! >= b.created_at! ? a : b))
+  }
+  return runs[runs.length - 1]
 }
 
 export function critiquesForRun(critiques: Critique[], runId: string | undefined): Critique[] {
@@ -130,10 +136,25 @@ export function runStatusMeta(status: RunStatus): RunStatusMeta {
 
 export type DerivedGuardrails = { primaryMetric?: string; guardrails: string[] }
 
-/** Guardrails aren't on Study; derive them from parsed feedback constraints. */
+/**
+ * Authoritative guardrails come from `Study.constraints` (spec). Human feedback
+ * notes augment/override them (a `change_metric` note steers the live study), and
+ * for a timestamp-less mock with no constraints we still derive from feedback.
+ */
 export function deriveGuardrails(detail: StudyDetail): DerivedGuardrails {
   const guardrails = new Set<string>()
   let primaryMetric: string | undefined
+
+  // 1. Authoritative: constraints echoed on the Study.
+  const c = detail.study?.constraints
+  if (c) {
+    if (typeof c.primary_metric === 'string') primaryMetric = c.primary_metric
+    for (const g of c.guardrails ?? []) {
+      if (g?.expr) guardrails.add(g.expr)
+    }
+  }
+
+  // 2. Augment / override with parsed feedback constraints (last note wins).
   for (const fb of detail.feedback ?? []) {
     const parsed = fb.parsed_constraints as Record<string, unknown> | undefined
     if (!parsed) continue
@@ -151,6 +172,7 @@ export function deriveBannedColumns(detail: StudyDetail): Set<string> {
   for (const col of detail.dataset_version?.columns ?? []) {
     if (col.is_candidate_leakage) banned.add(col.name)
   }
+  for (const name of detail.study?.constraints?.banned_columns ?? []) banned.add(name)
   for (const fb of detail.feedback ?? []) {
     if (fb.type === 'ban_feature' && fb.target_id) banned.add(fb.target_id)
   }
@@ -206,7 +228,17 @@ export function buildLedger(detail: StudyDetail): LedgerEntry[] {
   ;(detail.runs ?? []).forEach((data) => entries.push({ kind: 'run', id: data.id, data }))
   ;(detail.critiques ?? []).forEach((data) => entries.push({ kind: 'critique', id: data.id, data }))
   ;(detail.decisions ?? []).forEach((data) => entries.push({ kind: 'decision', id: data.id, data }))
+  // Chronological when timestamps are present; a stable sort otherwise preserves
+  // the event-type grouping built above (ES2019 Array.prototype.sort is stable).
   return entries
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => {
+      const ta = a.e.data.created_at
+      const tb = b.e.data.created_at
+      if (ta && tb && ta !== tb) return ta < tb ? -1 : 1
+      return a.i - b.i
+    })
+    .map((x) => x.e)
 }
 
 export function shortId(id: string | undefined, len = 6): string {

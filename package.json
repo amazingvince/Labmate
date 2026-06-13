@@ -7,7 +7,8 @@
   "workspaces": [
     "packages/*",
     "apps/web",
-    "apps/mcp-server"
+    "apps/mcp-server",
+    "apps/agent-runtime"
   ],
   "scripts": {
     "setup": "node scripts/setup.mjs",
@@ -26,12 +27,16 @@
     "db:migrate": "cd apps/web && npx wrangler d1 execute labmate --file=./schema.sql",
     "study": "node .claude/workflows/run-study.js examples/sla_tickets",
     "grade": "python3 scripts/grade_study.py --rubric docs/rubric.json",
-    "guard": "npm run schema:check && npm run lint && npm run test",
+    "guard": "npm run schema:check && npm run lint && npm run test && npm run test:agent",
     "guard:full": "npm run guard && npm run py:check && npm run py:test",
     "spec:lint": "npx @redocly/cli lint apps/api-spec/openapi.yaml",
     "spec:mock": "npx @stoplight/prism-cli mock apps/api-spec/openapi.yaml --port 4010",
     "spec:types": "npx openapi-typescript apps/api-spec/openapi.yaml -o packages/api-types/index.ts",
-    "spec:docs": "npx @redocly/cli build-docs apps/api-spec/openapi.yaml -o apps/api-spec/index.html"
+    "spec:docs": "npx @redocly/cli build-docs apps/api-spec/openapi.yaml -o apps/api-spec/index.html",
+    "agent:bootstrap": "node apps/agent-runtime/src/bootstrap.mjs",
+    "agent:dev": "node apps/agent-runtime/src/server.mjs",
+    "test:agent": "node --test apps/agent-runtime/tests/*.test.mjs",
+    "demo:e2e": "node scripts/demo_e2e.mjs"
   },
   "engines": {
     "node": ">=18.0.0",

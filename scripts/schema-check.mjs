@@ -126,6 +126,13 @@ const mustExist = [
   "apps/web/schema.sql",
   "apps/modal-runner/runner.py",
   "apps/mcp-server/src/index.js",
+  "apps/api-spec/openapi.yaml",
+  "apps/agent-runtime/src/server.mjs",
+  "apps/agent-runtime/src/bootstrap.mjs",
+  "apps/agent-runtime/src/loop.mjs",
+  "apps/agent-runtime/tests/e2e.smoke.test.mjs",
+  "docs/GOAL_E2E.md",
+  "scripts/demo_e2e.mjs",
 ];
 for (const rel of mustExist) {
   const abs = join(root, rel);
