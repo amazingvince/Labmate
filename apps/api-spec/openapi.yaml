@@ -128,6 +128,30 @@ paths:
                 $ref: "#/components/schemas/StudyDetail"
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/studies/{studyId}/stream:
+    parameters:
+      - $ref: "#/components/parameters/StudyId"
+    get:
+      tags: [studies]
+      operationId: streamStudy
+      summary: Live agent activity for a study (Server-Sent Events)
+      description: >
+        The control plane proxies the agent runtime's Managed Agents event stream
+        through to the cockpit: agent narration, tool-use, tool-results, nudges,
+        approval requests, and a final done event. Public, like the other reads.
+        Each SSE `data:` line is a JSON object with a `kind` discriminator
+        (e.g. session.created, agent.activity, tool.use, tool.result, nudge,
+        approval.needed, study.done, loop.error). Subscribing also starts the
+        study's session if it has not started yet.
+      security: []
+      responses:
+        "200":
+          description: An event stream of live agent activity.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
   /api/profile:
     post:
       tags: [studies]

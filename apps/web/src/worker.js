@@ -397,6 +397,11 @@ async function createStudy(env, body) {
       nowIso(),
     )
     .run();
+  // Best-effort: kick the agent runtime to start a Managed Agents session for this
+  // study. Fire-and-forget — never block or fail study creation on it. The SSE
+  // stream route (GET /api/studies/{id}/stream) also starts the study on first
+  // subscribe, so a dropped trigger self-heals when the cockpit connects.
+  triggerAgentStart(env, id);
   return json({ id, status: "open" }, 201);
 }
 
@@ -1030,6 +1035,48 @@ async function gradeStudy(env, body) {
 }
 
 // ---------------------------------------------------------------------------
+// agent runtime bridge
+// ---------------------------------------------------------------------------
+
+/** Fire-and-forget: ask the agent runtime to start a session for this study. */
+function triggerAgentStart(env, studyId) {
+  const base = (env.AGENT_RUNTIME_URL || "").replace(/\/$/, "");
+  if (!base) return; // no runtime wired (e.g. contract-test env) — skip silently
+  // Not awaited: study creation must not depend on the runtime being up.
+  fetch(`${base}/agent/start`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ study_id: studyId }),
+  }).catch(() => {});
+}
+
+/** Proxy the agent runtime's SSE event stream through to the cockpit (public). */
+async function proxyAgentStream(env, studyId) {
+  const sseHeaders = {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+    ...CORS,
+  };
+  const base = (env.AGENT_RUNTIME_URL || "").replace(/\/$/, "");
+  if (!base) {
+    // No runtime configured — emit one informational event and close so the
+    // cockpit renders a clean "runtime not connected" state instead of erroring.
+    const body = `event: info\ndata: ${JSON.stringify({ kind: "runtime_unavailable", study_id: studyId })}\n\n`;
+    return new Response(body, { headers: sseHeaders });
+  }
+  try {
+    const upstream = await fetch(`${base}/agent/${encodeURIComponent(studyId)}/stream`, {
+      headers: { accept: "text/event-stream" },
+    });
+    return new Response(upstream.body, { status: upstream.status, headers: sseHeaders });
+  } catch (e) {
+    const body = `event: error\ndata: ${JSON.stringify({ kind: "runtime_unreachable", detail: String(e?.message ?? e) })}\n\n`;
+    return new Response(body, { headers: sseHeaders });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // router
 // ---------------------------------------------------------------------------
 
@@ -1055,7 +1102,13 @@ export default {
     // Public reads
     if (method === "GET" && pathname === "/api/studies") return listStudies(env, url);
     if (method === "GET" && pathname.startsWith("/api/studies/")) {
-      return getStudyDetail(env, decodeURIComponent(pathname.slice("/api/studies/".length)));
+      const rest = decodeURIComponent(pathname.slice("/api/studies/".length));
+      // Live agent activity (SSE) — the control plane proxies the agent runtime's
+      // event stream through to the cockpit. Public, like the other reads.
+      if (rest.endsWith("/stream")) {
+        return proxyAgentStream(env, rest.slice(0, -"/stream".length));
+      }
+      return getStudyDetail(env, rest);
     }
 
     // Writes require the internal token.

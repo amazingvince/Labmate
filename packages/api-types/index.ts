@@ -51,6 +51,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/studies/{studyId}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example study_01HZX */
+                studyId: components["parameters"]["StudyId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Live agent activity for a study (Server-Sent Events)
+         * @description The control plane proxies the agent runtime's Managed Agents event stream through to the cockpit: agent narration, tool-use, tool-results, nudges, approval requests, and a final done event. Public, like the other reads. Each SSE `data:` line is a JSON object with a `kind` discriminator (e.g. session.created, agent.activity, tool.use, tool.result, nudge, approval.needed, study.done, loop.error). Subscribing also starts the study's session if it has not started yet.
+         */
+        get: operations["streamStudy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/profile": {
         parameters: {
             query?: never;
@@ -680,6 +703,29 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    streamStudy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example study_01HZX */
+                studyId: components["parameters"]["StudyId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An event stream of live agent activity. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
         };
     };
     profileDataset: {
