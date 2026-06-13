@@ -299,7 +299,10 @@ def launch(manifest: dict):
       • otherwise (a manifest) → the fixed sklearn trainer
     """
     if isinstance(manifest, dict) and manifest.get("script"):
-        return _run_experiment_sandbox(manifest)
+        try:
+            return _run_experiment_sandbox(manifest)
+        except Exception as e:  # never surface a 500 to the Worker
+            return {"status": "failed", "reason": f"runner error: {e}", "provenance": {"code_hash": _CODE_HASH, "seed": (manifest.get("split") or {}).get("seed")}}
     try:
         _validate_manifest(manifest)
     except ValueError as e:
@@ -359,16 +362,22 @@ def _run_experiment_sandbox(payload: dict):
     code_hash = hashlib.sha256(script.encode("utf-8")).hexdigest()[:12]
     seed = declared.get("seed")
 
-    sb = modal.Sandbox.create(
-        app=app,
-        image=image,
-        timeout=900,
-        block_network=True,  # the agent's arbitrary code cannot reach the network
-        cpu=2.0,
-        memory=4096,
-        workdir="/work",
-    )
+    # Any sandbox-lifecycle error (create/exec/io/transient Modal issue) must become a
+    # recordable failed result, never an uncaught 500 → 502 at the Worker.
+    sb = None
+    out = err = ""
+    rc = None
+    result_text = ""
     try:
+        sb = modal.Sandbox.create(
+            app=app,
+            image=image,
+            timeout=900,
+            block_network=True,  # the agent's arbitrary code cannot reach the network
+            cpu=2.0,
+            memory=4096,
+            workdir="/work",
+        )
         sb.mkdir("/work", parents=True)
         with sb.open("/work/data.csv", "wb") as f:
             f.write(raw)
@@ -379,14 +388,23 @@ def _run_experiment_sandbox(payload: dict):
         err = proc.stderr.read()
         proc.wait()
         rc = proc.returncode
-        result_text = ""
         try:
             with sb.open("/work/result.json", "r") as f:
                 result_text = f.read()
         except Exception:
             result_text = ""
+    except Exception as e:
+        return {
+            "status": "failed",
+            "reason": f"sandbox execution error: {type(e).__name__}: {e}",
+            "provenance": {"dataset_hash": dataset_hash, "code_hash": code_hash, "seed": seed},
+        }
     finally:
-        sb.terminate()
+        if sb is not None:
+            try:
+                sb.terminate()
+            except Exception:
+                pass
 
     if not result_text:
         tail = (err or out or "").strip()[-900:]
