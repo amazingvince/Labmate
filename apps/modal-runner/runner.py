@@ -80,19 +80,26 @@ def _load_dataset(uri: str):
     """
     import pandas as pd
 
+    # A browser-like User-Agent: the default Python-urllib UA is blocked (403) by
+    # Cloudflare Bot Fight Mode on the control-plane zone that serves the dataset.
+    def _fetch(url: str) -> bytes:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read()
+
     raw = None
     if uri.startswith("http://") or uri.startswith("https://"):
-        with urllib.request.urlopen(uri, timeout=60) as resp:
-            raw = resp.read()
+        raw = _fetch(uri)
     else:
         base = os.environ.get("LABMATE_DATASET_BASE", "").rstrip("/")
         if os.path.exists(uri):
             with open(uri, "rb") as f:
                 raw = f.read()
         elif base:
-            url = f"{base}/{uri.lstrip('/')}"
-            with urllib.request.urlopen(url, timeout=60) as resp:
-                raw = resp.read()
+            raw = _fetch(f"{base}/{uri.lstrip('/')}")
         else:
             raise ValueError(f"Cannot resolve dataset_uri '{uri}'. Provide an http(s) URL or set LABMATE_DATASET_BASE.")
 

@@ -149,6 +149,11 @@ async function startWrangler(port, mockUrl, persistDir) {
       `LABMATE_INTERNAL_TOKEN:${TOKEN}`,
       "--var",
       `MODAL_RUNNER_URL:${mockUrl}`,
+      // Neutralize the agent-runtime trigger/proxy during the contract test, so
+      // creating a study never fires at a real (deployed) runtime. wrangler.toml
+      // [vars] may hold a live AGENT_RUNTIME_URL for the deployed Worker.
+      "--var",
+      "AGENT_RUNTIME_URL:",
     ],
     {
       cwd: join(root, "apps/web"),

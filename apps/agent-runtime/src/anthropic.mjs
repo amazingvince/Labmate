@@ -37,6 +37,16 @@ export async function listAgents() {
   return client().beta.agents.list({ betas: [BETA] });
 }
 
+export async function getAgent(agentId) {
+  return client().beta.agents.retrieve(agentId, { betas: [BETA] });
+}
+
+/** Update an agent in place — creates a new immutable version, same id. Sessions
+ *  started after this pick up the latest version automatically. */
+export async function updateAgent(agentId, body) {
+  return client().beta.agents.update(agentId, { ...body, betas: [BETA] });
+}
+
 /* ---------- environments ---------- */
 
 export async function createEnvironment(body) {

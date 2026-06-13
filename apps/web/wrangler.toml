@@ -46,11 +46,11 @@ new_classes = ["StudySession"]
 # (or apps/web/.dev.vars locally). MODAL_RUNNER_URL is the deployed runner endpoint.
 [vars]
 LABMATE_ENV = "dev"
-MODAL_RUNNER_URL = ""
+MODAL_RUNNER_URL = "https://amazingvince--labmate-runner-launch.modal.run"
 # Agent runtime base URL (apps/agent-runtime). When set, POST /api/studies kicks a
 # Managed Agents session and GET /api/studies/{id}/stream proxies its SSE. Empty by
 # default so the contract test runs without a runtime; set locally in .dev.vars.
-AGENT_RUNTIME_URL = ""
+AGENT_RUNTIME_URL = "https://amazingvince--labmate-agent-runtime-agent-runtime.modal.run"
 # Base the Modal runner reads study CSVs from (R2/HTTPS). dataset_uri on a manifest
 # resolves to "{LABMATE_DATASET_BASE}/{dataset_id}.csv". Empty → relative key.
 LABMATE_DATASET_BASE = "https://labmate.amazingvince.com/data"

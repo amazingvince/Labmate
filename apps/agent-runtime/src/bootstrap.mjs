@@ -14,12 +14,13 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.mjs";
-import { createAgent, createEnvironment } from "./anthropic.mjs";
+import { createAgent, createEnvironment, updateAgent, getAgent } from "./anthropic.mjs";
 import { LABMATE_TOOLS } from "./tools.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const envPath = join(repoRoot, ".env");
 const force = process.argv.includes("--force");
+const update = process.argv.includes("--update"); // update the existing agent in place
 
 // Load .env into process.env. Tolerates both dotenv `KEY=value` and `KEY: value`
 // (the repo's .env uses the colon form); the separator is the FIRST `=` or `:`, so
@@ -76,13 +77,30 @@ Rules you always follow:
 Be concise in narration. Prefer calling tools over describing what you would do.
 `.trim();
 
+// The agent's tool surface: the Labmate custom tools (its real action surface) PLUS
+// the built-in toolset with ONLY read/glob/grep enabled. Skills REQUIRE the `read`
+// tool to be usable; bash/write/edit/code stay disabled so the agent still cannot
+// run arbitrary training code — Modal is the only executor (Hard Rule 1).
+const AGENT_TOOLS = [
+  {
+    type: "agent_toolset_20260401",
+    default_config: { enabled: false },
+    configs: [
+      { name: "read", enabled: true },
+      { name: "glob", enabled: true },
+      { name: "grep", enabled: true },
+    ],
+  },
+  ...LABMATE_TOOLS.map((t) => ({ type: "custom", ...t })),
+];
+
 async function main() {
   loadEnv();
   config.anthropicApiKey(); // fail fast if missing
 
   const existingAgent = process.env.LABMATE_AGENT_ID;
   const existingEnv = process.env.LABMATE_ENVIRONMENT_ID;
-  if (existingAgent && existingEnv && !force) {
+  if (existingAgent && existingEnv && !force && !update) {
     console.info("Already bootstrapped:");
     console.info(`  LABMATE_AGENT_ID=${existingAgent}`);
     console.info(`  LABMATE_ENVIRONMENT_ID=${existingEnv}`);
@@ -102,18 +120,30 @@ async function main() {
     .filter(Boolean)
     .map((skill_id) => ({ type: "custom", skill_id, version: "latest" }));
 
-  console.info(
-    `Creating Labmate agent (model + DS system prompt + ${LABMATE_TOOLS.length} custom tools + ${skills.length} skills)...`,
-  );
-  const agent = await createAgent({
+  const agentBody = {
     name: "Labmate DS",
     model: config.model, // claude-opus-4-8
     system: DS_SYSTEM_PROMPT,
-    // Managed Agents custom tools are a type-discriminated union — each needs type:"custom".
-    tools: LABMATE_TOOLS.map((t) => ({ type: "custom", ...t })),
+    tools: AGENT_TOOLS,
     ...(skills.length ? { skills } : {}),
     metadata: { project: "labmate" },
-  });
+  };
+
+  // --update: revise the EXISTING agent in place (new immutable version, same id).
+  // Sessions started afterwards pick up the latest version — no env/secret change.
+  if (update && existingAgent) {
+    const cur = await getAgent(existingAgent); // version is a required optimistic lock
+    console.info(`Updating agent ${existingAgent} (from version ${cur.version}; read-only toolset + ${skills.length} skills)...`);
+    const updated = await updateAgent(existingAgent, { ...agentBody, version: cur.version });
+    console.info(`  agent.id = ${updated.id} (new version ${updated.version ?? "?"})`);
+    console.info("\nAgent updated ✅ New sessions use the latest version. Environment unchanged.");
+    return;
+  }
+
+  console.info(
+    `Creating Labmate agent (model + DS system prompt + ${LABMATE_TOOLS.length} custom tools + read-only toolset + ${skills.length} skills)...`,
+  );
+  const agent = await createAgent(agentBody);
   console.info(`  agent.id = ${agent.id}`);
 
   console.info("Creating cloud environment (the agent's sandbox)...");
