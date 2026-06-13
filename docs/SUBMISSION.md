@@ -10,8 +10,8 @@ Repo: https://github.com/amazingvince/Labmate (public ✅)
 | Rubric (machine-gradable) | ✅ | `docs/RUBRIC.md`, `docs/rubric.json`, `/api/grade` |
 | Workflow / orchestration | ✅ | `docs/GOAL_E2E.md`, `.claude/workflows/run-study.js`, `npm run guard` |
 | 1-min demo video | ❌ | record last |
-| Live URL | ❌ | deploy `apps/web` (cockpit + control plane) |
-| Session log | ⚠️ | export this session |
+| Live URL | ✅ | https://amazingvince.com |
+| Session log | ✅ | `submission/SESSIONS.md` + redacted `submission/session-logs/` |
 
 ## Proven now
 - `npm run test:agent` — 4/4 pass, incl. the self-correction loop (leaky launch
@@ -19,21 +19,13 @@ Repo: https://github.com/amazingvince/Labmate (public ✅)
 - Managed Agent + Environment created against the real Anthropic API (IDs in `.env`).
 - Cockpit built (`apps/cockpit/dist`).
 
-## Priority order (time-boxed)
-1. **Commit + merge everything (10 min).** Untracked demo code (`apps/agent-runtime/`,
-   `scripts/demo_e2e.mjs`, `docs/GOAL_E2E.md`) must be on `main`. Merge `integration → main`, push.
-2. **Deploy to a live URL (15-20 min).** `apps/web`: D1 migrate, R2 bucket, `wrangler secret put`
-   ANTHROPIC_API_KEY / LABMATE_INTERNAL_TOKEN / MODAL_RUNNER_URL, `wrangler deploy`. Set
-   `LABMATE_PUBLIC_URL` to the workers.dev URL. Seed the demo study so the URL shows the ledger.
-3. **Record the 1-min video (15 min).** Lean on what's proven (DEMO_SCRIPT.md): cockpit +
-   the caught-leakage rerun in `npm run test:agent` + `/api/grade` → done.
-4. **STRETCH — real end-to-end (riskier).** `modal deploy apps/modal-runner/runner.py` →
-   set `MODAL_RUNNER_URL` → `npm run demo:e2e` against real Opus 4.8 + real Modal. Only if 1-3 done.
-
-## Cleanup before submit
-- `.env` is gitignored (confirmed) — but **rotate the ANTHROPIC_API_KEY** after the event; it's in plaintext locally.
-- Drop build cruft from the repo: `labmate-starter.zip`, `labmate-e2e-overlay.zip`,
-  `labmate_hackathon_scaffold.html` (or .gitignore them).
+## What's left
+1. ✅ ~~Commit demo code~~ — committed + pushed to `integration` (`apps/agent-runtime/`, `scripts/demo_e2e.mjs`, `docs/GOAL_E2E.md`).
+2. ✅ ~~Deploy to a live URL~~ — live at **https://amazingvince.com**.
+3. ✅ ~~Cleanup pass~~ — removed overlay-installer + zip/scaffold cruft; rewrote README product-first.
+4. ⬜ **Merge `integration → main`** so the public default branch has the full build (needs your OK — auto-mode won't push to main unprompted).
+5. ⬜ **Record the 1-min video.** Shot-list in [`submission/README.md`](../submission/README.md); lean on the proven `npm run test:agent` self-correction moment.
+6. ⬜ **After the event: rotate `ANTHROPIC_API_KEY` + Modal tokens** (plaintext in local `.env` during the build).
 
 ## Scoring angle (what to say in the video / finals)
 - **Impact (35%)**: back-office DS workflow (weeks → live), agent-native evidence ledger vs AutoML.

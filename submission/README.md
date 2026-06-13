@@ -17,11 +17,8 @@ documents, and iterates on tabular ML experiments. The **evidence ledger**
 | Rubric (machine-gradable) | ✅ | [`docs/RUBRIC.md`](../docs/RUBRIC.md) · [`docs/rubric.json`](../docs/rubric.json) |
 | Orchestration / workflow | ✅ | [`docs/PARALLEL_BUILD.md`](../docs/PARALLEL_BUILD.md) · [`docs/GOAL_E2E.md`](../docs/GOAL_E2E.md) · `.claude/workflows/run-study.js` |
 | Session log | ✅ | [`SESSIONS.md`](SESSIONS.md) + `session-logs/*.jsonl` (redacted) |
-| **Live URL** | ⬜ **PASTE HERE** | `https://labmate.<your-subdomain>.workers.dev` |
+| **Live URL** | ✅ | **https://amazingvince.com** |
 | 1-min demo video | ⬜ TODO | see shot-list below |
-
-> The Worker **is deployed** (last deploy 2026-06-13 21:16 UTC). Paste the workers.dev
-> URL above — it couldn't be auto-resolved (no `CLOUDFLARE_API_TOKEN` in `.env`).
 
 ## What's real (not stubbed)
 - **Managed Agent + cloud Environment** created against the real Anthropic API
@@ -39,7 +36,7 @@ npm run test:agent       # the self-correction loop, isolated
 ```
 
 ## 60-second demo shot-list
-1. **(0–8s)** Live cockpit URL — the four-pane mission control + evidence ledger. *(Impact)*
+1. **(0–8s)** Live cockpit at **amazingvince.com** — the four-pane mission control + evidence ledger. *(Impact)*
 2. **(8–20s)** Create a study / show the seeded `sla_tickets` study: data contract, target=`breached_sla`, candidate leakage columns flagged. *(Demo)*
 3. **(20–35s)** The agent catches leakage and **reruns corrected** — run `npm run test:agent` on screen, point to "leaky launch rejected → corrected rerun → done." *(Demo + Orchestration)*
 4. **(35–48s)** Inject NL feedback "recall matters more than precision, keep FPR ≤ 20%" → parsed into a structured constraint that shapes the next experiment. *(Opus 4.8)*
