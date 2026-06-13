@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://labmate.dev/schemas/experiment_manifest.schema.json",
+  "title": "ExperimentManifest",
+  "description": "A reproducible, sandboxed experiment spec. Claude builds this from an approved hypothesis card; the Modal runner executes it. No arbitrary code.",
+  "type": "object",
+  "required": ["study_id", "dataset_uri", "target", "task_type", "split", "features", "model", "metric"],
+  "properties": {
+    "study_id": { "type": "string" },
+    "hypothesis_id": { "type": "string" },
+    "dataset_uri": { "type": "string", "description": "Where the runner pulls the CSV (R2 key or public URL)." },
+    "target": { "type": "string" },
+    "task_type": { "type": "string", "enum": ["binary_classification", "regression"] },
+    "split": {
+      "type": "object",
+      "required": ["strategy", "seed"],
+      "properties": {
+        "strategy": { "type": "string", "enum": ["time_based", "stratified"] },
+        "time_col": { "type": "string" },
+        "ratios": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3,
+                    "description": "[train, validation, test]" },
+        "seed": { "type": "integer" }
+      }
+    },
+    "features": { "type": "array", "items": { "type": "string" },
+                  "description": "MUST exclude banned/leaky columns." },
+    "banned_columns": { "type": "array", "items": { "type": "string" } },
+    "model": {
+      "type": "object",
+      "required": ["family"],
+      "properties": {
+        "family": { "type": "string",
+                    "enum": ["dummy", "logistic_regression", "linear_regression",
+                             "random_forest", "hist_gradient_boosting", "xgboost", "lightgbm"] },
+        "params": { "type": "object" }
+      }
+    },
+    "search": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "max_trials": { "type": "integer", "minimum": 1, "default": 20 },
+        "timeout_seconds": { "type": "integer", "minimum": 1, "default": 600 },
+        "sampler": { "type": "string", "default": "tpe" },
+        "tune_on": { "type": "string", "enum": ["validation"], "default": "validation",
+                     "description": "Tuning on 'test' is forbidden and rejected by the runner." }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "required": ["primary"],
+      "properties": {
+        "primary": { "type": "string", "examples": ["recall_at_fpr", "pr_auc", "roc_auc", "rmse", "mae"] },
+        "max_fpr": { "type": "number", "description": "Guardrail for recall_at_fpr." }
+      }
+    },
+    "applied_feedback_id": { "type": "string", "description": "Human feedback id whose parsed constraint shaped this manifest." },
+    "tags": { "type": "array", "items": { "type": "string" }, "examples": [["baseline"]] }
+  }
+}

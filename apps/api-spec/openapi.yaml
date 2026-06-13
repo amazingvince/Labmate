@@ -1,0 +1,895 @@
+openapi: 3.1.0
+info:
+  title: Labmate Control Plane API
+  version: 0.1.0
+  description: >
+    The Labmate control plane is the Cloudflare Worker (apps/web) that the MCP
+    server and the cockpit both talk to. It is the single contract for parallel
+    front-end / back-end work: the back end implements these routes against D1,
+    R2, and the Durable Object; the front end builds the cockpit against a mock
+    generated from this file. Neither side has to wait for the other.
+
+    Conventions
+    -----------
+    * All write routes mirror a semantic MCP tool (create_study, profile_dataset,
+      propose_experiments, request_approval, launch_experiment, query_runs,
+      record_human_feedback, write_report, grade_study_against_rubric).
+    * Writes require the shared internal bearer token (LABMATE_INTERNAL_TOKEN).
+      Reads used by the cockpit are public.
+    * Entity shapes mirror packages/schemas/*.schema.json and apps/web/schema.sql.
+      If you change an entity, change it there and here together.
+    * The evidence ledger is the product: every run links to a hypothesis and
+      carries rationale; every critique and decision is recorded.
+
+servers:
+  - url: http://localhost:8787
+    description: Local wrangler dev
+  - url: https://labmate.{your-subdomain}.workers.dev
+    description: Deployed Worker (this becomes LABMATE_PUBLIC_URL)
+    variables:
+      your-subdomain:
+        default: example
+
+tags:
+  - name: studies
+    description: Create studies and read the full evidence ledger.
+  - name: experiments
+    description: Propose hypotheses and launch sandboxed runs.
+  - name: approvals
+    description: Human approval gates for compute and risky actions.
+  - name: feedback
+    description: Human business judgment, parsed into experiment constraints.
+  - name: reports
+    description: Reproducible model cards with provenance.
+  - name: grading
+    description: Machine-gradable definition of done.
+
+security:
+  - internalToken: []
+
+paths:
+  /api/studies:
+    post:
+      tags: [studies]
+      operationId: createStudy
+      summary: Create a study (create_study)
+      description: >
+        Opens the evidence ledger from a brief. The human supplies business
+        judgment (objective, target, metric, constraints, budget); this returns
+        the study id everything else hangs off.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStudyRequest"
+            examples:
+              slaTickets:
+                $ref: "#/components/examples/CreateStudySlaTickets"
+      responses:
+        "201":
+          description: Study created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateStudyResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    get:
+      tags: [studies]
+      operationId: listStudies
+      summary: List studies (cockpit home)
+      description: Read route the cockpit uses to render the study list. Public.
+      security: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [open, done, stopped]
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: A list of studies.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [studies]
+                properties:
+                  studies:
+                    type: array
+                    items: { $ref: "#/components/schemas/Study" }
+
+  /api/studies/{studyId}:
+    parameters:
+      - $ref: "#/components/parameters/StudyId"
+    get:
+      tags: [studies]
+      operationId: getStudy
+      summary: Full study detail / evidence ledger (study detail)
+      description: >
+        The cockpit's main read and the shape grade_study.py fetches. Returns the
+        study plus its dataset version, hypotheses, runs, critiques, decisions,
+        feedback, and artifacts — the whole ledger in one call. Public.
+      security: []
+      responses:
+        "200":
+          description: The study and its complete ledger.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudyDetail"
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/profile:
+    post:
+      tags: [studies]
+      operationId: profileDataset
+      summary: Profile the dataset (profile_dataset)
+      description: >
+        Profiles the study's dataset and writes a dataset version: columns with
+        dtypes and missingness, candidate leakage columns (flagged, defaulting to
+        banned), the split strategy, and the seed.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [study_id]
+              properties:
+                study_id: { type: string }
+      responses:
+        "200":
+          description: Dataset profiled; data contract written.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetVersion"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/experiments/propose:
+    post:
+      tags: [experiments]
+      operationId: proposeExperiments
+      summary: Propose hypothesis cards (propose_experiments)
+      description: >
+        Returns N hypothesis cards (statement, rationale, model family, candidate
+        features, expected outcome). These render as the experiment cards in the
+        cockpit; the human approves, edits, or rejects them.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [study_id]
+              properties:
+                study_id: { type: string }
+                n:
+                  type: integer
+                  minimum: 1
+                  maximum: 12
+                  default: 6
+      responses:
+        "200":
+          description: Proposed hypotheses.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hypotheses]
+                properties:
+                  hypotheses:
+                    type: array
+                    items: { $ref: "#/components/schemas/Hypothesis" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/approvals/request:
+    post:
+      tags: [approvals]
+      operationId: requestApproval
+      summary: Request human approval (request_approval)
+      description: >
+        Creates a pending approval the cockpit surfaces (e.g. launching N runs at
+        an estimated cost, or unbanning a leakage feature). Compute cannot launch
+        until a matching approval is recorded via /api/feedback (type=approval).
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalRequest"
+      responses:
+        "200":
+          description: Pending approval created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approval_id, status]
+                properties:
+                  approval_id: { type: string }
+                  status: { type: string, enum: [pending] }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/experiments/launch:
+    post:
+      tags: [experiments]
+      operationId: launchExperiment
+      summary: Launch a sandboxed experiment (launch_experiment)
+      description: >
+        Verifies an approval exists, submits the experiment manifest to the Modal
+        runner, and records a run with metrics, params, artifacts, and provenance
+        (dataset_hash, code_hash, seed). The manifest is the only thing handed to
+        the runner — no arbitrary code. Tuning on 'test' is rejected.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [manifest]
+              properties:
+                manifest: { $ref: "#/components/schemas/ExperimentManifest" }
+                approval_id:
+                  type: string
+                  description: The approval authorizing this compute.
+            examples:
+              baseline:
+                $ref: "#/components/examples/LaunchBaseline"
+      responses:
+        "201":
+          description: Run created (may still be running).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "402":
+          description: No approval on file, or budget exceeded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422":
+          description: Manifest invalid (e.g. banned column in features, tune_on=test).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/runs/query:
+    post:
+      tags: [experiments]
+      operationId: queryRuns
+      summary: Query runs (query_runs)
+      description: >
+        Filter the ledger's runs by metric thresholds, model family, hypothesis,
+        tags, or linked critique kind. Powers both the cockpit run table and the
+        agent's "show me runs where recall improved but precision dropped" queries.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunQuery"
+      responses:
+        "200":
+          description: Matching runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items: { $ref: "#/components/schemas/Run" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/feedback:
+    post:
+      tags: [feedback]
+      operationId: recordHumanFeedback
+      summary: Record human feedback (record_human_feedback)
+      description: >
+        Stores a human judgment and (for natural-language notes) its parsed
+        constraints. An approval is feedback of type=approval. The ergonomic
+        breakthrough: the human gives judgment, the agent gets a structured
+        constraint it can apply to later manifests (applied_feedback_id).
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Feedback"
+            examples:
+              recallOverPrecision:
+                $ref: "#/components/examples/FeedbackRecall"
+              approval:
+                $ref: "#/components/examples/FeedbackApproval"
+      responses:
+        "201":
+          description: Feedback recorded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Feedback" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/reports:
+    post:
+      tags: [reports]
+      operationId: writeReport
+      summary: Generate the model card (write_report)
+      description: >
+        Assembles the final report — objective, data, split, experiments table,
+        best vs baseline, risks, rejected ideas, next steps, a reproducible
+        command, and a provenance footer — stores it in R2, and records an
+        artifact of kind=report.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [study_id]
+              properties:
+                study_id: { type: string }
+                report_type:
+                  type: string
+                  enum: [model_card, summary]
+                  default: model_card
+      responses:
+        "201":
+          description: Report generated and stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Report" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/grade:
+    post:
+      tags: [grading]
+      operationId: gradeStudy
+      summary: Grade against the rubric (grade_study_against_rubric)
+      description: >
+        Evaluates the study against docs/rubric.json and returns pass/fail per
+        check plus an overall verdict. This is the machine-checkable definition of
+        done — the Stop hook calls it so "done" is verifiable without a human.
+      security:
+        - internalToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [study_id]
+              properties:
+                study_id: { type: string }
+      responses:
+        "200":
+          description: Grading result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GradeResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    internalToken:
+      type: http
+      scheme: bearer
+      description: >
+        Shared secret (LABMATE_INTERNAL_TOKEN) between the MCP server and the
+        Worker. Not the Cloudflare API token. Generate with `openssl rand -hex 24`.
+
+  parameters:
+    StudyId:
+      name: studyId
+      in: path
+      required: true
+      schema: { type: string }
+      example: study_01HZX
+
+  responses:
+    BadRequest:
+      description: Malformed request body.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing or invalid internal token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        detail: { type: string }
+
+    Budget:
+      type: object
+      properties:
+        max_trials: { type: integer, default: 20 }
+        budget_seconds: { type: integer, default: 600 }
+
+    Study:
+      type: object
+      required: [id, brief, dataset_id, target, metric]
+      properties:
+        id: { type: string }
+        brief: { type: string }
+        owner: { type: string }
+        task_type:
+          type: string
+          enum: [binary_classification, regression]
+        dataset_id: { type: string }
+        target: { type: string }
+        metric: { type: string }
+        metric_rationale: { type: string }
+        budget: { $ref: "#/components/schemas/Budget" }
+        rubric: { type: string, default: docs/rubric.json }
+        status:
+          type: string
+          enum: [open, done, stopped]
+          default: open
+
+    CreateStudyRequest:
+      type: object
+      required: [brief, dataset_id, target, metric]
+      properties:
+        brief: { type: string }
+        owner: { type: string }
+        task_type:
+          type: string
+          enum: [binary_classification, regression]
+        dataset_id: { type: string }
+        target: { type: string }
+        metric: { type: string }
+        metric_rationale: { type: string }
+        constraints:
+          $ref: "#/components/schemas/Constraints"
+        budget: { $ref: "#/components/schemas/Budget" }
+        rubric: { type: string, default: docs/rubric.json }
+
+    CreateStudyResponse:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [open] }
+
+    Constraints:
+      type: object
+      properties:
+        primary_metric: { type: string }
+        guardrails:
+          type: array
+          items:
+            type: object
+            properties:
+              expr: { type: string, examples: ["false_positive_rate <= 0.20"] }
+              rationale: { type: string }
+        banned_columns:
+          type: array
+          items: { type: string }
+        require_interpretability: { type: boolean, default: false }
+
+    ColumnProfile:
+      type: object
+      required: [name, dtype]
+      properties:
+        name: { type: string }
+        dtype: { type: string }
+        missing_fraction: { type: number, minimum: 0, maximum: 1 }
+        n_unique: { type: integer }
+        is_candidate_leakage: { type: boolean, default: false }
+        leakage_reason: { type: string }
+
+    SplitStrategy:
+      type: object
+      required: [strategy, seed]
+      properties:
+        strategy:
+          type: string
+          enum: [time_based, stratified]
+        time_col: { type: string }
+        ratios:
+          type: array
+          items: { type: number }
+          minItems: 3
+          maxItems: 3
+          description: "[train, validation, test]"
+        seed: { type: integer }
+
+    DatasetVersion:
+      type: object
+      required: [id, study_id, file_hash, row_count]
+      properties:
+        id: { type: string }
+        study_id: { type: string }
+        file_hash: { type: string }
+        row_count: { type: integer }
+        columns:
+          type: array
+          items: { $ref: "#/components/schemas/ColumnProfile" }
+        target_definition: { type: string }
+        split_strategy: { $ref: "#/components/schemas/SplitStrategy" }
+
+    Hypothesis:
+      type: object
+      required: [id, study_id, statement]
+      properties:
+        id: { type: string }
+        study_id: { type: string }
+        statement: { type: string, description: "A falsifiable claim." }
+        rationale: { type: string }
+        model_family: { type: string }
+        features:
+          type: array
+          items: { type: string }
+        expected_outcome: { type: string }
+        status:
+          type: string
+          enum: [proposed, approved, rejected]
+
+    ModelSpec:
+      type: object
+      required: [family]
+      properties:
+        family:
+          type: string
+          enum:
+            - dummy
+            - logistic_regression
+            - linear_regression
+            - random_forest
+            - hist_gradient_boosting
+            - xgboost
+            - lightgbm
+        params: { type: object, additionalProperties: true }
+
+    SearchSpec:
+      type: object
+      properties:
+        enabled: { type: boolean, default: false }
+        max_trials: { type: integer, minimum: 1, default: 20 }
+        timeout_seconds: { type: integer, minimum: 1, default: 600 }
+        sampler: { type: string, default: tpe }
+        tune_on:
+          type: string
+          enum: [validation]
+          default: validation
+          description: Tuning on 'test' is forbidden and rejected by the runner.
+
+    MetricSpec:
+      type: object
+      required: [primary]
+      properties:
+        primary:
+          type: string
+          examples: [recall_at_fpr, pr_auc, roc_auc, rmse, mae]
+        max_fpr: { type: number }
+
+    ExperimentManifest:
+      type: object
+      required: [study_id, dataset_uri, target, task_type, split, features, model, metric]
+      properties:
+        study_id: { type: string }
+        hypothesis_id: { type: string }
+        dataset_uri:
+          type: string
+          description: Where the runner pulls the CSV (R2 key or public URL).
+        target: { type: string }
+        task_type:
+          type: string
+          enum: [binary_classification, regression]
+        split: { $ref: "#/components/schemas/SplitStrategy" }
+        features:
+          type: array
+          items: { type: string }
+          description: MUST exclude banned/leaky columns.
+        banned_columns:
+          type: array
+          items: { type: string }
+        model: { $ref: "#/components/schemas/ModelSpec" }
+        search: { $ref: "#/components/schemas/SearchSpec" }
+        metric: { $ref: "#/components/schemas/MetricSpec" }
+        applied_feedback_id:
+          type: string
+          description: Human feedback id whose parsed constraint shaped this manifest.
+        tags:
+          type: array
+          items: { type: string }
+          examples: [["baseline"]]
+
+    Run:
+      type: object
+      required: [id, study_id, hypothesis_id, status]
+      properties:
+        id: { type: string }
+        study_id: { type: string }
+        hypothesis_id: { type: string }
+        manifest_id: { type: string }
+        tracker_run_id: { type: string }
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        metrics: { type: object, additionalProperties: { type: number } }
+        params: { type: object, additionalProperties: true }
+        artifacts:
+          type: object
+          additionalProperties: true
+          description: name -> { uri, kind }
+        rationale: { type: string, description: "What this run tests and why." }
+        tags:
+          type: array
+          items: { type: string }
+        executor:
+          type: string
+          const: modal-runner
+        dataset_hash: { type: string }
+        code_hash: { type: string }
+        seed: { type: integer }
+
+    Critique:
+      type: object
+      required: [id, study_id, kind, finding]
+      properties:
+        id: { type: string }
+        study_id: { type: string }
+        target_run_id: { type: string }
+        kind:
+          type: string
+          enum: [leakage, test_set_tuning, metric, calibration, robustness]
+        finding: { type: string }
+        recommendation: { type: string }
+        led_to_decision:
+          type: string
+          enum: [promote, reject, rerun, branch, stop]
+
+    Decision:
+      type: object
+      required: [id, study_id, action]
+      properties:
+        id: { type: string }
+        study_id: { type: string }
+        action:
+          type: string
+          enum: [promote, reject, rerun, branch, stop]
+        promoted_run_id: { type: string }
+        rejected_run_id: { type: string }
+        reason: { type: string }
+
+    Feedback:
+      type: object
+      required: [study_id, type, content]
+      properties:
+        id: { type: string }
+        study_id: { type: string }
+        target_id: { type: string }
+        type:
+          type: string
+          enum: [approval, ban_feature, change_metric, increase_budget, focus_segment, note]
+        scope: { type: string, enum: [study, hypothesis, run, experiment] }
+        content: { type: string }
+        parsed_constraints:
+          type: object
+          additionalProperties: true
+          description: "e.g. { primary_metric: 'recall', guardrail: 'false_positive_rate <= 0.20' }"
+
+    ApprovalRequest:
+      type: object
+      required: [study_id, reason]
+      properties:
+        study_id: { type: string }
+        experiment_ids:
+          type: array
+          items: { type: string }
+        reason: { type: string }
+        estimated_cost_seconds: { type: integer }
+
+    Artifact:
+      type: object
+      required: [id, study_id, kind, uri]
+      properties:
+        id: { type: string }
+        study_id: { type: string }
+        kind: { type: string, enum: [report, plot, model, confusion_matrix] }
+        uri: { type: string }
+        dataset_hash: { type: string }
+        code_hash: { type: string }
+        seed: { type: integer }
+
+    Report:
+      type: object
+      required: [study_id, uri]
+      properties:
+        study_id: { type: string }
+        uri: { type: string, description: R2 location of the rendered report. }
+        best_run_id: { type: string }
+        baseline_run_id: { type: string }
+        compares_best_to_baseline: { type: boolean }
+        reproducible_command: { type: string }
+        provenance:
+          type: object
+          properties:
+            dataset_hash: { type: string }
+            code_hash: { type: string }
+            seed: { type: integer }
+
+    RunQuery:
+      type: object
+      required: [study_id]
+      properties:
+        study_id: { type: string }
+        model_family: { type: string }
+        hypothesis_id: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        critique_kind:
+          type: string
+          enum: [leakage, test_set_tuning, metric, calibration, robustness]
+        metric_filters:
+          type: array
+          description: e.g. recall >= 0.7 AND precision < 0.5
+          items:
+            type: object
+            required: [name, op, value]
+            properties:
+              name: { type: string }
+              op: { type: string, enum: ["<", "<=", "=", ">=", ">"] }
+              value: { type: number }
+
+    StudyDetail:
+      type: object
+      required: [study]
+      description: The whole evidence ledger in one payload (cockpit + grader read this).
+      properties:
+        study: { $ref: "#/components/schemas/Study" }
+        dataset_version: { $ref: "#/components/schemas/DatasetVersion" }
+        hypotheses:
+          type: array
+          items: { $ref: "#/components/schemas/Hypothesis" }
+        runs:
+          type: array
+          items: { $ref: "#/components/schemas/Run" }
+        critiques:
+          type: array
+          items: { $ref: "#/components/schemas/Critique" }
+        decisions:
+          type: array
+          items: { $ref: "#/components/schemas/Decision" }
+        feedback:
+          type: array
+          items: { $ref: "#/components/schemas/Feedback" }
+        artifacts:
+          type: array
+          items: { $ref: "#/components/schemas/Artifact" }
+        recommendation:
+          type: string
+          description: Current agent recommendation rendered in the cockpit.
+
+    GradeResult:
+      type: object
+      required: [study_id, verdict, checks]
+      properties:
+        study_id: { type: string }
+        rubric_name: { type: string }
+        rubric_version: { type: integer }
+        verdict:
+          type: string
+          enum: [done, not_done]
+        passed_required: { type: integer }
+        total_required: { type: integer }
+        checks:
+          type: array
+          items:
+            type: object
+            required: [id, required, passed]
+            properties:
+              id: { type: string }
+              category: { type: string }
+              required: { type: boolean }
+              passed: { type: boolean }
+              detail: { type: string }
+
+  examples:
+    CreateStudySlaTickets:
+      summary: SLA-breach study on the bundled dataset
+      value:
+        brief: >
+          Predict which support tickets will breach SLA. Optimize recall at an
+          acceptable false-positive cost. Do not use fields created after ticket
+          close.
+        owner: team@example.com
+        task_type: binary_classification
+        dataset_id: sla_tickets
+        target: breached_sla
+        metric: recall_at_fpr
+        metric_rationale: Missed breaches are costlier than false alarms up to 20% FPR.
+        constraints:
+          primary_metric: recall
+          guardrails:
+            - expr: "false_positive_rate <= 0.20"
+          banned_columns: [resolved_at, time_to_resolution, closed_status, agent_notes_final]
+        budget:
+          max_trials: 20
+          budget_seconds: 600
+
+    LaunchBaseline:
+      summary: A baseline logistic-regression run
+      value:
+        approval_id: appr_01HZX
+        manifest:
+          study_id: study_01HZX
+          hypothesis_id: hyp_baseline
+          dataset_uri: studies/study_01HZX/data.csv
+          target: breached_sla
+          task_type: binary_classification
+          split:
+            strategy: time_based
+            time_col: created_at
+            ratios: [0.7, 0.15, 0.15]
+            seed: 42
+          features: [priority, customer_tier, channel, product_area, region, reporter_history_count, queue_depth_at_creation, is_reopen, description_length, business_hours_flag]
+          banned_columns: [resolved_at, time_to_resolution, closed_status, agent_notes_final]
+          model:
+            family: logistic_regression
+          metric:
+            primary: recall_at_fpr
+            max_fpr: 0.20
+          tags: [baseline]
+
+    FeedbackRecall:
+      summary: Natural-language judgment parsed into a constraint
+      value:
+        study_id: study_01HZX
+        type: note
+        scope: study
+        content: >
+          Recall matters more than precision, but false positives above 20% are
+          not acceptable.
+        parsed_constraints:
+          primary_metric: recall
+          guardrail: "false_positive_rate <= 0.20"
+
+    FeedbackApproval:
+      summary: Approving a batch of runs
+      value:
+        study_id: study_01HZX
+        type: approval
+        scope: study
+        content: Approved 8 experiments, 10-minute budget.

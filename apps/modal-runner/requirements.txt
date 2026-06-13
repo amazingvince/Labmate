@@ -1,0 +1,6 @@
+# Modal runner — local tooling. The training deps are installed inside the Modal image
+# (see runner.py), not here. This file is for the local CLI / dataset generation.
+modal>=0.64
+pandas>=2.0
+numpy>=1.26
+scikit-learn>=1.4

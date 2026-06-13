@@ -1,0 +1,2 @@
+# Generated types land here: `npm run spec:types` writes index.ts from the OpenAPI spec.
+# Both tracks import from @labmate/api-types. Do not hand-edit the generated file.

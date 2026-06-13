@@ -1,0 +1,15 @@
+{
+  "name": "@labmate/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Labmate Cloudflare control plane: Worker API + D1 + Durable Object + R2, and the cockpit UI.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute labmate --file=./schema.sql",
+    "db:init:local": "wrangler d1 execute labmate --local --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0"
+  }
+}

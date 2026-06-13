@@ -1,0 +1,64 @@
+{
+  "$schema": "https://labmate.dev/schemas/rubric.schema.json",
+  "name": "labmate-mvp",
+  "version": 1,
+  "description": "Machine-gradable definition of done for a Labmate study. grade_study_against_rubric evaluates a study_id against each check and returns pass/fail. The study is 'done' when every required check passes.",
+  "pass_threshold": "all_required",
+  "categories": [
+    {
+      "id": "functional",
+      "title": "Functional",
+      "checks": [
+        { "id": "study_created", "required": true, "description": "A study exists with brief, dataset_id, target, and metric.", "check": "study.brief != null && study.dataset_id != null && study.target != null && study.metric != null" },
+        { "id": "data_contract", "required": true, "description": "A data contract was written for the study.", "check": "exists(data_contract WHERE study_id = study.id)" },
+        { "id": "five_experiments", "required": true, "description": "At least five experiments were proposed.", "check": "count(hypothesis WHERE study_id = study.id) >= 5" },
+        { "id": "human_can_act", "required": true, "description": "At least one human feedback / approval event is recorded.", "check": "count(feedback WHERE study_id = study.id) >= 1" },
+        { "id": "experiments_ran", "required": true, "description": "At least five runs completed in Modal.", "check": "count(run WHERE study_id = study.id AND status = 'completed') >= 5" },
+        { "id": "runs_logged", "required": true, "description": "Completed runs carry metrics, params, and a hypothesis_id.", "check": "all(run WHERE status='completed': run.metrics != null && run.params != null && run.hypothesis_id != null)" },
+        { "id": "report_generated", "required": true, "description": "A final report artifact exists.", "check": "exists(artifact WHERE study_id = study.id AND kind = 'report')" }
+      ]
+    },
+    {
+      "id": "ds_quality",
+      "title": "Data-science quality",
+      "checks": [
+        { "id": "deterministic_split", "required": true, "description": "Split strategy with a fixed seed is recorded in the data contract.", "check": "data_contract.split_strategy != null && data_contract.seed != null" },
+        { "id": "baseline_present", "required": true, "description": "A baseline run (dummy/logistic/linear) exists.", "check": "exists(run WHERE study_id = study.id AND tags contains 'baseline')" },
+        { "id": "target_metric_documented", "required": true, "description": "Target definition and metric rationale recorded.", "check": "data_contract.target_definition != null && study.metric_rationale != null" },
+        { "id": "leakage_review_before_training", "required": true, "description": "A leakage critique exists with timestamp before the first non-baseline run.", "check": "exists(critique WHERE study_id = study.id AND kind = 'leakage') && min(critique.created_at WHERE kind='leakage') <= min(run.created_at WHERE NOT tags contains 'baseline')" },
+        { "id": "best_vs_baseline", "required": true, "description": "The promoted model is compared against the baseline in the report.", "check": "report.compares_best_to_baseline == true" },
+        { "id": "critic_reviewed_final", "required": true, "description": "A critique exists referencing the promoted run.", "check": "exists(critique WHERE study_id = study.id AND target_run_id = decision.promoted_run_id)" }
+      ]
+    },
+    {
+      "id": "agent_native_tracking",
+      "title": "Agent-native tracking",
+      "checks": [
+        { "id": "runs_linked_to_hypothesis", "required": true, "description": "Every run links to a hypothesis.", "check": "all(run WHERE study_id = study.id: run.hypothesis_id != null)" },
+        { "id": "runs_have_rationale", "required": true, "description": "Every run carries agent rationale text.", "check": "all(run WHERE study_id = study.id: run.rationale != null)" },
+        { "id": "feedback_affected_plan", "required": true, "description": "At least one experiment manifest references a human feedback id (parsed constraint applied).", "check": "exists(experiment_manifest WHERE applied_feedback_id != null)" },
+        { "id": "runs_queryable", "required": false, "description": "Runs can be filtered by metric, feature set, model type, and critique.", "check": "query_runs supports filters: metric, features, model_family, critique" }
+      ]
+    },
+    {
+      "id": "orchestration",
+      "title": "Orchestration",
+      "checks": [
+        { "id": "rerunnable", "required": true, "description": "The whole loop is rerunnable from a single command.", "check": "exists(file '.claude/workflows/run-study.js')" },
+        { "id": "uses_harness", "required": true, "description": "Subagents, skills, and hooks are present.", "check": "exists(dir '.claude/agents') && exists(dir '.claude/skills') && settings.hooks != null" },
+        { "id": "verifiable_without_human", "required": true, "description": "grade_study_against_rubric can run unattended and return a verdict.", "check": "self" },
+        { "id": "caught_an_issue", "required": true, "description": "The session caught/corrected at least one methodological issue (leakage or test-set tuning).", "check": "exists(critique WHERE study_id = study.id AND kind in ['leakage','test_set_tuning'] AND led_to_decision in ['reject','rerun'])" }
+      ]
+    },
+    {
+      "id": "safety_control",
+      "title": "Safety & control",
+      "checks": [
+        { "id": "compute_gated", "required": true, "description": "Modal launches required an approval event.", "check": "all(run WHERE study_id = study.id: exists(feedback WHERE type='approval' AND created_at <= run.created_at))" },
+        { "id": "leakage_fields_blocked", "required": true, "description": "Suspicious leakage fields were excluded unless explicitly approved.", "check": "data_contract.banned_columns intersect data_contract.leakage_candidates != empty OR exists(feedback WHERE type='ban_feature')" },
+        { "id": "sandboxed_only", "required": true, "description": "Execution happened only via the fixed Modal runner.", "check": "all(run: run.executor == 'modal-runner')" },
+        { "id": "provenance", "required": true, "description": "Artifacts carry dataset hash, code hash, and seed.", "check": "all(artifact WHERE kind='report': artifact.dataset_hash != null && artifact.code_hash != null && artifact.seed != null)" }
+      ]
+    }
+  ]
+}

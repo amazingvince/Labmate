@@ -1,0 +1,45 @@
+{
+  "name": "labmate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent-native data science harness for tabular business problems",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/web",
+    "apps/mcp-server"
+  ],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "preflight": "bash scripts/preflight.sh",
+    "gen:data": "python3 scripts/gen_dataset.py",
+    "schema:check": "node scripts/schema-check.mjs",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{js,mjs,json,md}\"",
+    "format:check": "prettier --check \"**/*.{js,mjs,json,md}\"",
+    "test": "node --test tests/*.test.mjs",
+    "py:check": "cd apps/modal-runner && ruff check . && (mypy runner.py || true)",
+    "py:test": "cd apps/modal-runner && pytest -q",
+    "dev:mcp": "npm run dev --workspace=apps/mcp-server",
+    "dev:web": "cd apps/web && npx wrangler dev",
+    "db:migrate": "cd apps/web && npx wrangler d1 execute labmate --file=./schema.sql",
+    "study": "node .claude/workflows/run-study.js examples/sla_tickets",
+    "grade": "python3 scripts/grade_study.py --rubric docs/rubric.json",
+    "guard": "npm run schema:check && npm run lint && npm run test",
+    "guard:full": "npm run guard && npm run py:check && npm run py:test",
+    "spec:lint": "npx @redocly/cli lint apps/api-spec/openapi.yaml",
+    "spec:mock": "npx @stoplight/prism-cli mock apps/api-spec/openapi.yaml --port 4010",
+    "spec:types": "npx openapi-typescript apps/api-spec/openapi.yaml -o packages/api-types/index.ts",
+    "spec:docs": "npx @redocly/cli build-docs apps/api-spec/openapi.yaml -o apps/api-spec/index.html"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.2",
+    "@eslint/js": "^8.57.0"
+  }
+}

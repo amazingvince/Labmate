@@ -1,0 +1,32 @@
+name = "labmate"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# ---- D1 (studies, hypotheses, runs, feedback, critiques, decisions) ----
+# Create with: npx wrangler d1 create labmate
+# then paste the printed database_id here AND into .env (CLOUDFLARE_D1_DATABASE_ID).
+[[d1_databases]]
+binding = "DB"
+database_name = "labmate"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# ---- R2 (artifacts, reports, model files) ----
+# Create with: npx wrangler r2 bucket create labmate-artifacts
+[[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "labmate-artifacts"
+
+# ---- Durable Object (live study state / event stream for the cockpit) ----
+[[durable_objects.bindings]]
+name = "STUDY"
+class_name = "StudySession"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["StudySession"]
+
+# ---- Vars / secrets ----
+# Set the secret with: npx wrangler secret put LABMATE_INTERNAL_TOKEN
+[vars]
+LABMATE_ENV = "dev"

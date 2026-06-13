@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://labmate.dev/schemas/study.schema.json",
+  "title": "Study + ledger entities",
+  "description": "Shapes for the agent-native evidence ledger. Mirrors apps/web/schema.sql. The point of Labmate: log what the agent believed, why it acted, what changed its mind, and what the human corrected.",
+  "type": "object",
+  "$defs": {
+    "study": {
+      "type": "object",
+      "required": ["id", "brief", "dataset_id", "target", "metric"],
+      "properties": {
+        "id": { "type": "string" },
+        "brief": { "type": "string" },
+        "owner": { "type": "string" },
+        "task_type": { "type": "string", "enum": ["binary_classification", "regression"] },
+        "dataset_id": { "type": "string" },
+        "target": { "type": "string" },
+        "metric": { "type": "string" },
+        "metric_rationale": { "type": "string" },
+        "budget": { "type": "object", "properties": { "max_trials": { "type": "integer" }, "budget_seconds": { "type": "integer" } } },
+        "rubric": { "type": "string", "default": "docs/rubric.json" },
+        "status": { "type": "string", "enum": ["open", "done", "stopped"], "default": "open" }
+      }
+    },
+    "hypothesis": {
+      "type": "object",
+      "required": ["id", "study_id", "statement"],
+      "properties": {
+        "id": { "type": "string" },
+        "study_id": { "type": "string" },
+        "statement": { "type": "string", "description": "A falsifiable claim." },
+        "rationale": { "type": "string" },
+        "model_family": { "type": "string" },
+        "features": { "type": "array", "items": { "type": "string" } },
+        "expected_outcome": { "type": "string" },
+        "status": { "type": "string", "enum": ["proposed", "approved", "rejected"] }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["id", "study_id", "hypothesis_id", "status"],
+      "properties": {
+        "id": { "type": "string" },
+        "study_id": { "type": "string" },
+        "hypothesis_id": { "type": "string" },
+        "manifest_id": { "type": "string" },
+        "tracker_run_id": { "type": "string" },
+        "status": { "type": "string", "enum": ["queued", "running", "completed", "failed"] },
+        "metrics": { "type": "object" },
+        "params": { "type": "object" },
+        "artifacts": { "type": "object" },
+        "rationale": { "type": "string", "description": "What this run tests and why." },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "executor": { "type": "string", "const": "modal-runner" },
+        "dataset_hash": { "type": "string" },
+        "code_hash": { "type": "string" },
+        "seed": { "type": "integer" }
+      }
+    },
+    "critique": {
+      "type": "object",
+      "required": ["id", "study_id", "kind", "finding"],
+      "properties": {
+        "id": { "type": "string" },
+        "study_id": { "type": "string" },
+        "target_run_id": { "type": "string" },
+        "kind": { "type": "string", "enum": ["leakage", "test_set_tuning", "metric", "calibration", "robustness"] },
+        "finding": { "type": "string" },
+        "recommendation": { "type": "string" },
+        "led_to_decision": { "type": "string", "enum": ["promote", "reject", "rerun", "branch", "stop"] }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["id", "study_id", "action"],
+      "properties": {
+        "id": { "type": "string" },
+        "study_id": { "type": "string" },
+        "action": { "type": "string", "enum": ["promote", "reject", "rerun", "branch", "stop"] },
+        "promoted_run_id": { "type": "string" },
+        "rejected_run_id": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+    "feedback": {
+      "type": "object",
+      "required": ["id", "study_id", "type", "content"],
+      "properties": {
+        "id": { "type": "string" },
+        "study_id": { "type": "string" },
+        "target_id": { "type": "string" },
+        "type": { "type": "string", "enum": ["approval", "ban_feature", "change_metric", "increase_budget", "focus_segment", "note"] },
+        "scope": { "type": "string" },
+        "content": { "type": "string" },
+        "parsed_constraints": { "type": "object", "description": "e.g. { primary_metric: 'recall', guardrail: 'false_positive_rate <= 0.20' }" }
+      }
+    }
+  }
+}
