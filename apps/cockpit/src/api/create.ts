@@ -95,7 +95,7 @@ function buildRequest(input: CreateStudyInput): CreateStudyRequest {
 function describeError(err: unknown): string {
   if (err instanceof HttpError) {
     if (err.status === 0) return 'Signal lost — API unreachable'
-    if (err.status === 401) return 'Unauthorized — set VITE_API_TOKEN to create studies'
+    if (err.status === 401) return 'Unauthorized — click Unlock (top bar) and paste the internal token'
     return err.detail ? `${err.message}: ${err.detail}` : err.message
   }
   return err instanceof Error ? err.message : 'Unknown error'

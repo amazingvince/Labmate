@@ -1,8 +1,11 @@
 /**
  * Typed fetch client around VITE_API_BASE. Reads are public; writes carry the
- * shared internal bearer token (VITE_API_TOKEN). Flipping VITE_API_BASE from the
- * Prism mock to the real Worker is the only change needed to go live.
+ * operator's internal bearer token (see api/token.ts — pasted by the operator,
+ * stored in this browser, never baked into the public bundle). Flipping
+ * VITE_API_BASE from the Prism mock to the real Worker is the only change needed
+ * to go live.
  */
+import { getApiToken, hasApiToken } from './token'
 import type {
   ApprovalRequest,
   CreateStudyRequest,
@@ -20,7 +23,6 @@ import type {
 
 const RAW_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:4010'
 export const API_BASE = RAW_BASE.replace(/\/+$/, '')
-const TOKEN = import.meta.env.VITE_API_TOKEN ?? ''
 
 /** Error carrying the spec's { error, detail } body and the HTTP status. */
 export class HttpError extends Error {
@@ -46,7 +48,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body) headers.set('content-type', 'application/json')
   // Reads are public; sending the bearer anyway is harmless and covers writes.
-  if (TOKEN) headers.set('authorization', `Bearer ${TOKEN}`)
+  // Read fresh each request so unlocking takes effect without a reload.
+  const token = getApiToken()
+  if (token) headers.set('authorization', `Bearer ${token}`)
 
   let res: Response
   try {
@@ -71,7 +75,9 @@ function post<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   base: API_BASE,
-  hasToken: Boolean(TOKEN),
+  get hasToken(): boolean {
+    return hasApiToken()
+  },
 
   listStudies(params?: { status?: Study['status']; limit?: number }): Promise<StudyListResponse> {
     const q = new URLSearchParams()

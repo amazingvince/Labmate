@@ -2,6 +2,7 @@
  *  content, and an optional sticky footer (the study action bar). */
 import type { ReactNode } from 'react'
 import { ModeToggle } from '@/components/layout/ModeToggle'
+import { UnlockButton } from '@/components/layout/UnlockButton'
 
 export function AppShell({
   children,
@@ -21,6 +22,7 @@ export function AppShell({
             Labmate
           </a>
           <div className="ml-auto flex items-center gap-1.5">
+            <UnlockButton />
             <ModeToggle />
           </div>
         </div>

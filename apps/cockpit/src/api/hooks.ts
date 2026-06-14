@@ -59,7 +59,7 @@ function describeError(err: unknown): string {
     if (err.status === 0) return 'Signal lost — API unreachable'
     if (err.status === 402) return 'Compute blocked — approval or budget required'
     if (err.status === 422) return `Manifest rejected — ${err.message}`
-    if (err.status === 401) return 'Unauthorized — check VITE_API_TOKEN'
+    if (err.status === 401) return 'Unauthorized — click Unlock and paste the internal token'
     return err.detail ? `${err.message}: ${err.detail}` : err.message
   }
   return err instanceof Error ? err.message : 'Unknown error'
