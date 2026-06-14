@@ -30,6 +30,5 @@ labmate-starter.zip
 labmate-e2e-overlay.zip
 labmate_hackathon_scaffold.html
 
-# raw session transcripts — keep writeups, not the multi-MB jsonl, in the public repo
-submission/session-logs/
+# session transcripts under submission/session-logs/ are committed (secret-scrubbed).
 .claude/worktrees/
