@@ -4,11 +4,24 @@ compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 account_id = "f7759969c2ba490558d2bcd889d54d5d"
 
-# Custom domain for the deployed control plane (LABMATE_PUBLIC_URL). Requires
-# amazingvince.com to be a zone on this account; `wrangler deploy` auto-provisions
-# the DNS record + TLS cert. Ignored by `wrangler dev` (local). Comment this out to
-# deploy to the default labmate.<account>.workers.dev instead.
-routes = [{ pattern = "labmate.amazingvince.com", custom_domain = true }]
+# Custom domains for the deployed app. The same Worker serves the cockpit SPA
+# (via [assets] below) AND the /api control plane on BOTH hostnames; the SPA is
+# same-origin so it calls /api on whichever domain it loaded from. Both domains
+# are listed so a deploy never prunes one. `wrangler deploy` auto-provisions the
+# DNS record + TLS cert. Ignored by `wrangler dev` (local).
+routes = [
+  # Apex is a zone route over an existing (externally-managed) DNS record — NOT a
+  # custom_domain (declaring it custom_domain makes wrangler try to manage DNS and
+  # fail against the existing record). zone route just binds the Worker; DNS stays.
+  { pattern = "amazingvince.com/*", zone_name = "amazingvince.com" },
+  { pattern = "labmate.amazingvince.com", custom_domain = true },
+]
+
+# Cockpit SPA served as Workers Static Assets. `npm run build` (apps/cockpit)
+# emits ../cockpit/dist; assets are served first and /api/* + unmatched paths
+# fall through to the Worker (src/worker.js). Build the cockpit before deploying.
+[assets]
+directory = "../cockpit/dist"
 
 # schema.sql is imported as a Text module so the Worker can self-apply the ledger
 # schema on first request (in addition to `wrangler d1 execute --file=./schema.sql`).
