@@ -106,7 +106,15 @@ export const api = {
     return request<Report>(`/api/studies/${encodeURIComponent(studyId)}/report`)
   },
 
-  /** Direct URL to the raw model-card markdown (downloadable / openable). */
+  /**
+   * Direct URL to the raw model-card markdown (downloadable / openable).
+   *
+   * NOTE: this is consumed as a bare `<a href>` GET — the browser fetches it
+   * WITHOUT the operator bearer token (an anchor can't carry an Authorization
+   * header). It only works because the report route is PUBLIC (reads are public;
+   * the markdown carries no secrets). If that route is ever moved behind auth,
+   * this link breaks and must become a token-bearing `fetch` + object URL.
+   */
   reportMarkdownUrl(studyId: string): string {
     return `${API_BASE}/api/studies/${encodeURIComponent(studyId)}/report?format=md`
   },

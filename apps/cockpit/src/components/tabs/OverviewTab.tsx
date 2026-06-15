@@ -11,6 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { runsForHypothesis } from '@/lib/derive'
 import { BriefCard } from '@/components/study/BriefCard'
 import { ReadinessSummary } from '@/components/study/ReadinessRubric'
 import { FeedbackForm } from '@/components/study/FeedbackForm'
@@ -64,11 +65,21 @@ export function OverviewTab({
   actions: StudyActions
 }) {
   const hyps = detail.hypotheses ?? []
-  const approved = hyps.filter((h) => h.status === 'approved').length
   const runs = detail.runs ?? []
+  // "Activated" = approved OR already run OR tested. Live hypotheses keep
+  // status 'proposed' after they run, so a plain status==='approved' count reads
+  // 0/19 — derive from runs-or-approved-or-tested instead.
+  const activated = hyps.filter(
+    (h) =>
+      h.status === 'approved' ||
+      h.status === 'tested' ||
+      runsForHypothesis(runs, h.id).length > 0,
+  ).length
   const completed = runs.filter((r) => r.status === 'completed').length
   const rows = detail.dataset_version?.row_count
   const { verb, detail: recDetail } = splitRecommendation(recommendation, flag)
+  // splitRecommendation returns verb='' for prose; show a sensible tile value.
+  const recValue = verb || (recDetail ? 'Note' : '—')
 
   return (
     <div className="space-y-6">
@@ -76,8 +87,8 @@ export function OverviewTab({
         <StatTile
           href={studyHref(studyId, 'experiments')}
           label="Experiments"
-          value={`${approved}/${hyps.length}`}
-          sub="approved"
+          value={`${activated}/${hyps.length}`}
+          sub="approved or run"
         />
         <StatTile
           href={studyHref(studyId, 'experiments')}
@@ -94,7 +105,7 @@ export function OverviewTab({
         <StatTile
           href={studyHref(studyId, 'report')}
           label="Recommendation"
-          value={<span className="text-xl">{verb}</span>}
+          value={<span className="text-xl">{recValue}</span>}
           sub={recDetail || undefined}
         />
       </div>

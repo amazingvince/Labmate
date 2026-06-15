@@ -2,7 +2,7 @@
  *  renders the active tab. Keeping the fetch here — not per-tab — means switching
  *  tabs never re-fetches, re-polls, or drops the overlay. */
 import { useMemo } from 'react'
-import { useStudy, useStudyActions } from '@/api/hooks'
+import { hasActiveRun, useStudy, useStudyActions } from '@/api/hooks'
 import { useAgentStream } from '@/api/useAgentStream'
 import { deriveBannedColumns, methodologicalFlag, primaryMetricKey } from '@/lib/derive'
 import { mergeStudyDetail, useOverlay } from '@/state/overlay'
@@ -34,10 +34,15 @@ export function StudyView({ studyId, tab }: { studyId: string; tab: StudyTab }) 
   const study = detail?.study
   const actions = useStudyActions(studyId, { budgetSeconds: study?.budget?.budget_seconds })
 
-  // Live agent stream — only subscribe while the Live tab is open (subscribing
-  // starts/streams the runtime session; we don't want that on every tab). When a
-  // streamed event mutates durable state, refetch so the other tabs stay current.
-  const stream = useAgentStream(tab === 'live' ? studyId : undefined, (evt) => {
+  // Live agent stream — only subscribe while the Live tab is open AND the study
+  // is actually live: a run is in flight, or the study is still 'open' (the agent
+  // could pick it up). For a done/stopped/idle study, opening the stream would
+  // hang forever on "Connecting…", so we don't — AgentActivity shows a calm
+  // terminal state instead. When a streamed event mutates durable state, refetch
+  // so the other tabs stay current.
+  const sessionLive = study?.status === 'open' || hasActiveRun(detail)
+  const streamActive = tab === 'live' && sessionLive
+  const stream = useAgentStream(streamActive ? studyId : undefined, (evt) => {
     if (REFETCH_ON.has(evt.kind)) actions.refresh()
   })
 
@@ -72,8 +77,10 @@ export function StudyView({ studyId, tab }: { studyId: string; tab: StudyTab }) 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
         {tab === 'live' ? (
           // The live stream is independent of the study fetch — show it even while
-          // the record is still being created or if the read errored.
-          <AgentActivity events={stream.events} status={stream.status} />
+          // the record is still being created or if the read errored. When the
+          // session isn't live we never opened the stream; flag it idle so the
+          // feed renders "Session ended" instead of a perpetual spinner.
+          <AgentActivity events={stream.events} status={stream.status} idle={ready && !streamActive} />
         ) : query.isError ? (
           <ErrorCard error={query.error} onRetry={() => query.refetch()} />
         ) : !ready || !detail || !study ? (

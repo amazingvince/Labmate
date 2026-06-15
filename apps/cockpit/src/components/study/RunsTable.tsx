@@ -1,10 +1,13 @@
-/** Every run with status, model family (joined from its hypothesis), aligned
- *  metrics, seed, tags, and linked critique markers. */
+/** Every run (chronological), with status, model family (joined from its
+ *  hypothesis), aligned metrics, seed, and tags.
+ *
+ *  Critiques are NOT shown per-run: the backend never sets `Critique.target_run_id`,
+ *  so there is no real run→critique link to render. Critiques live at study scope
+ *  (the evidence ledger + the methodological-flag banner). We only surface the
+ *  run-level signal we actually have — a failed run — by tinting its row. */
 import type { Critique, Hypothesis, Run } from '@/api/types'
 import {
-  CRITIQUE_COLOR,
-  CRITIQUE_LABEL,
-  critiquesForRun,
+  byCreatedAt,
   formatMetricValue,
   metricEntries,
   metricLabel,
@@ -52,11 +55,11 @@ function MetricCells({ run, metricKey }: { run: Run; metricKey?: string }) {
 export function RunsTable({
   runs = [],
   hypotheses = [],
-  critiques = [],
   metricKey,
 }: {
   runs?: Run[]
   hypotheses?: Hypothesis[]
+  /** Accepted for call-site compatibility; not rendered (critiques are study-scoped). */
   critiques?: Critique[]
   metricKey?: string
 }) {
@@ -64,10 +67,13 @@ export function RunsTable({
     return <EmptyCard title="No runs yet" hint="Approved experiments launch runs on the Modal runner." />
   }
   const familyOf = (hypId: string) => hypotheses.find((h) => h.id === hypId)?.model_family
+  const ordered = byCreatedAt(runs)
 
   return (
-    <div className="overflow-hidden rounded-lg border">
-      <Table>
+    // overflow-x-auto (not overflow-hidden) so the table scrolls on narrow
+    // viewports instead of clipping; min-w keeps columns readable.
+    <div className="overflow-x-auto rounded-lg border">
+      <Table className="min-w-[44rem]">
         <TableHeader>
           <TableRow>
             <TableHead>Status</TableHead>
@@ -76,21 +82,17 @@ export function RunsTable({
             <TableHead>Metrics</TableHead>
             <TableHead>Seed</TableHead>
             <TableHead>Tags</TableHead>
-            <TableHead>Critiques</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {runs.map((run) => {
+          {ordered.map((run) => {
             const meta = runStatusMeta(run.status)
-            const linked = critiquesForRun(critiques, run.id)
-            const flagged = linked.some(
-              (c) => c.kind === 'leakage' || c.kind === 'test_set_tuning',
-            )
+            const failed = run.status === 'failed'
             return (
-              <TableRow key={run.id} className={cn(flagged && 'bg-destructive/5')}>
+              <TableRow key={run.id} className={cn(failed && 'bg-destructive/5')}>
                 <TableCell>
                   <span className="flex items-center gap-2">
-                    <StatusDot status={run.status} />
+                    <StatusDot status={run.status} decorative />
                     <span className="text-xs capitalize text-muted-foreground">
                       {meta.label.toLowerCase()}
                     </span>
@@ -119,25 +121,6 @@ export function RunsTable({
                       <Badge key={t} variant="secondary" className="font-mono text-[10px] font-normal">
                         {t}
                       </Badge>
-                    ))}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <span className="flex items-center gap-1">
-                    {linked.map((c) => (
-                      <Tooltip key={c.id}>
-                        <TooltipTrigger asChild>
-                          <span
-                            className="size-2 rounded-full"
-                            style={{ backgroundColor: CRITIQUE_COLOR[c.kind] }}
-                            role="img"
-                            aria-label={`${CRITIQUE_LABEL[c.kind]} critique`}
-                          />
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-xs">
-                          <span className="font-medium">{CRITIQUE_LABEL[c.kind]}</span>: {c.finding}
-                        </TooltipContent>
-                      </Tooltip>
                     ))}
                   </span>
                 </TableCell>

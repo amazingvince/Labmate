@@ -1,23 +1,34 @@
 /** One hypothesis card: statement, rationale, features, the latest run's metric,
- *  and the Approve / Deny / Rerun controls (optimistic via the overlay). */
-import { Loader2Icon, TriangleAlertIcon } from 'lucide-react'
-import type { Critique, Hypothesis, Run } from '@/api/types'
+ *  and the Approve / Deny / Rerun controls (optimistic via the overlay). Once the
+ *  hypothesis has a run (or status 'tested'), Approve/Deny are gone — only Rerun
+ *  remains. Write controls are disabled until the operator unlocks. */
+import { Loader2Icon } from 'lucide-react'
+import type { Hypothesis, Run } from '@/api/types'
 import type { StudyActions } from '@/api/hooks'
-import {
-  CRITIQUE_LABEL,
-  critiquesForRun,
-  latestRun,
-  pickPrimaryMetric,
-  runsForHypothesis,
-} from '@/lib/derive'
+import { useHasApiToken } from '@/api/token'
+import { latestRun, pickPrimaryMetric, runsForHypothesis } from '@/lib/derive'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { MetricValue } from '@/components/study/MetricValue'
 import { cn } from '@/lib/utils'
 
-function HypStatusBadge({ status }: { status: Hypothesis['status'] }) {
+const LOCK_HINT = 'Unlock to enable writes'
+
+function HypStatusBadge({ status, ran }: { status: Hypothesis['status']; ran: boolean }) {
+  // A hypothesis with a run is "tested" regardless of its stored status.
+  if (ran || status === 'tested') {
+    return (
+      <Badge
+        variant="outline"
+        className="shrink-0 bg-transparent capitalize"
+        style={{ borderColor: 'var(--st-completed)', color: 'var(--st-completed)' }}
+      >
+        tested
+      </Badge>
+    )
+  }
   if (status === 'approved') {
     return (
       <Badge
@@ -43,10 +54,50 @@ function HypStatusBadge({ status }: { status: Hypothesis['status'] }) {
   )
 }
 
+/** A write button that disables + explains itself when the cockpit is locked. */
+function WriteButton({
+  locked,
+  className,
+  variant,
+  pending,
+  disabled,
+  onClick,
+  children,
+}: {
+  locked: boolean
+  className?: string
+  variant?: 'default' | 'outline' | 'ghost'
+  pending?: boolean
+  disabled?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  const btn = (
+    <Button
+      size="sm"
+      className={className}
+      variant={variant}
+      disabled={locked || pending || disabled}
+      onClick={onClick}
+    >
+      {pending ? <Loader2Icon className="size-3.5 animate-spin" /> : children}
+    </Button>
+  )
+  if (!locked) return btn
+  return (
+    <Tooltip>
+      {/* span wrapper: a disabled button doesn't fire the hover that opens the tip */}
+      <TooltipTrigger asChild>
+        <span className={cn('inline-flex', className)}>{btn}</span>
+      </TooltipTrigger>
+      <TooltipContent>{LOCK_HINT}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 export function ExperimentCard({
   hyp,
   runs,
-  critiques,
   banned,
   rerunRequested,
   actions,
@@ -54,36 +105,28 @@ export function ExperimentCard({
 }: {
   hyp: Hypothesis
   runs: Run[]
-  critiques: Critique[]
   banned: Set<string>
   rerunRequested: boolean
   actions: StudyActions
   metricKey?: string
 }) {
+  const locked = !useHasApiToken()
   const run = latestRun(runsForHypothesis(runs, hyp.id))
   const primary = run ? pickPrimaryMetric(run, metricKey) : undefined
-  const linked = critiquesForRun(critiques, run?.id)
-  const flag = linked.find((c) => c.kind === 'leakage' || c.kind === 'test_set_tuning')
   const running = run?.status === 'running'
   const status = hyp.status ?? 'proposed'
+  const ran = Boolean(run) || status === 'tested'
 
   const approvePending = actions.approve.isPending && actions.approve.variables?.id === hyp.id
   const denyPending = actions.deny.isPending && actions.deny.variables?.id === hyp.id
   const rerunPending = actions.rerun.isPending && actions.rerun.variables?.id === hyp.id
 
   return (
-    <Card className={cn('flex flex-col gap-0', flag && 'border-destructive/40')}>
+    <Card className="flex flex-col gap-0">
       <CardHeader className="gap-3">
-        {flag && (
-          <Alert variant="destructive" className="py-2.5">
-            <TriangleAlertIcon />
-            <AlertTitle className="text-xs">{CRITIQUE_LABEL[flag.kind]}</AlertTitle>
-            <AlertDescription className="text-xs">{flag.finding}</AlertDescription>
-          </Alert>
-        )}
         <div className="flex items-start justify-between gap-3">
           <h3 className="text-sm font-semibold leading-snug">{hyp.statement}</h3>
-          <HypStatusBadge status={status} />
+          <HypStatusBadge status={status} ran={ran} />
         </div>
         {hyp.rationale && (
           <p className="text-xs leading-relaxed text-muted-foreground">{hyp.rationale}</p>
@@ -137,44 +180,41 @@ export function ExperimentCard({
         </div>
 
         <div className="flex gap-2">
-          <Button
-            size="sm"
-            className="flex-1"
-            variant={status === 'approved' ? 'default' : 'outline'}
-            disabled={status !== 'proposed' || approvePending}
-            onClick={() => actions.approve.mutate(hyp)}
-          >
-            {approvePending ? (
-              <Loader2Icon className="size-3.5 animate-spin" />
-            ) : status === 'approved' ? (
-              'Approved'
-            ) : (
-              'Approve'
-            )}
-          </Button>
-          <Button
-            size="sm"
-            className="flex-1"
-            variant="outline"
-            disabled={status !== 'proposed' || denyPending}
-            onClick={() => actions.deny.mutate(hyp)}
-          >
-            {denyPending ? (
-              <Loader2Icon className="size-3.5 animate-spin" />
-            ) : status === 'rejected' ? (
-              'Denied'
-            ) : (
-              'Deny'
-            )}
-          </Button>
-          <Button
-            size="sm"
+          {/* Approve/Deny only make sense before the hypothesis has been run.
+              Once it's tested they're hidden; Rerun stays available. */}
+          {!ran && (
+            <>
+              <WriteButton
+                locked={locked}
+                className="flex-1"
+                variant={status === 'approved' ? 'default' : 'outline'}
+                pending={approvePending}
+                disabled={status !== 'proposed'}
+                onClick={() => actions.approve.mutate(hyp)}
+              >
+                {status === 'approved' ? 'Approved' : 'Approve'}
+              </WriteButton>
+              <WriteButton
+                locked={locked}
+                className="flex-1"
+                variant="outline"
+                pending={denyPending}
+                disabled={status !== 'proposed'}
+                onClick={() => actions.deny.mutate(hyp)}
+              >
+                {status === 'rejected' ? 'Denied' : 'Deny'}
+              </WriteButton>
+            </>
+          )}
+          <WriteButton
+            locked={locked}
+            className={cn(ran && 'flex-1')}
             variant="ghost"
-            disabled={rerunPending}
+            pending={rerunPending}
             onClick={() => actions.rerun.mutate(hyp)}
           >
-            {rerunPending ? <Loader2Icon className="size-3.5 animate-spin" /> : 'Rerun'}
-          </Button>
+            Rerun
+          </WriteButton>
         </div>
       </CardContent>
     </Card>

@@ -316,27 +316,21 @@ function Row({ node }: { node: NonNullable<Node> }) {
   )
 }
 
-function StatusLamp({ status }: { status: StreamStatus }) {
-  const label =
-    status === 'connected'
-      ? 'Live'
-      : status === 'error'
-        ? 'Reconnecting'
-        : status === 'runtime_unavailable'
-          ? 'Offline'
-          : 'Connecting'
-  const tone =
-    status === 'connected'
-      ? 'bg-emerald-500'
-      : status === 'error'
-        ? 'bg-amber-500'
-        : status === 'runtime_unavailable'
-          ? 'bg-muted-foreground'
-          : 'bg-sky-500'
+const LAMP: Record<StreamStatus, { label: string; tone: string }> = {
+  connected: { label: 'Live', tone: 'bg-emerald-500' },
+  connecting: { label: 'Connecting', tone: 'bg-sky-500' },
+  reconnecting: { label: 'Reconnecting', tone: 'bg-amber-500' },
+  error: { label: 'Error', tone: 'bg-destructive' },
+  runtime_unavailable: { label: 'Offline', tone: 'bg-muted-foreground' },
+  ended: { label: 'Ended', tone: 'bg-muted-foreground' },
+}
+
+function StatusLamp({ status, idle }: { status: StreamStatus; idle?: boolean }) {
+  const { label, tone } = idle ? { label: 'Idle', tone: 'bg-muted-foreground' } : LAMP[status]
   return (
     <span className="flex items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite">
       <span
-        className={cn('size-2 rounded-full', tone, status === 'connected' && 'animate-pulse')}
+        className={cn('size-2 rounded-full', tone, !idle && status === 'connected' && 'animate-pulse')}
         aria-hidden="true"
       />
       {label}
@@ -347,9 +341,13 @@ function StatusLamp({ status }: { status: StreamStatus }) {
 export function AgentActivity({
   events,
   status,
+  idle = false,
 }: {
   events: AgentEvent[]
   status: StreamStatus
+  /** The study is finished/idle and the stream was intentionally not opened —
+   *  render a calm terminal state instead of a perpetual connecting spinner. */
+  idle?: boolean
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const rows = events.map((evt) => ({ evt, node: nodeFor(evt) })).filter((r) => r.node)
@@ -360,6 +358,27 @@ export function AgentActivity({
     if (el) el.scrollTop = el.scrollHeight
   }, [rows.length])
 
+  const emptyState = () => {
+    if (idle && rows.length === 0) {
+      return <Empty icon={<SquareIcon className="size-5" />} label="Session ended — no live activity" />
+    }
+    if (status === 'runtime_unavailable' && rows.length === 0) {
+      return <Empty icon={<PlugZapIcon className="size-5" />} label="Runtime not connected" />
+    }
+    if (status === 'ended' && rows.length === 0) {
+      return <Empty icon={<SquareIcon className="size-5" />} label="Session ended — no live activity" />
+    }
+    if (status === 'error' && rows.length === 0) {
+      return <Empty icon={<TriangleAlertIcon className="size-5" />} label="Stream error — session not live" />
+    }
+    return (
+      <Empty
+        icon={<ActivityIcon className="size-5 animate-pulse" />}
+        label={status === 'connected' ? 'Awaiting agent activity…' : 'Connecting to live stream…'}
+      />
+    )
+  }
+
   return (
     <Card className="flex h-[70vh] flex-col gap-0 overflow-hidden py-0">
       <CardHeader className="flex flex-row items-center justify-between gap-2 border-b px-6 py-3">
@@ -367,16 +386,11 @@ export function AgentActivity({
           <ActivityIcon className="size-4 text-muted-foreground" />
           Agent activity
         </CardTitle>
-        <StatusLamp status={status} />
+        <StatusLamp status={status} idle={idle} />
       </CardHeader>
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
-        {status === 'runtime_unavailable' && rows.length === 0 ? (
-          <Empty icon={<PlugZapIcon className="size-5" />} label="Runtime not connected" />
-        ) : rows.length === 0 ? (
-          <Empty
-            icon={<ActivityIcon className="size-5 animate-pulse" />}
-            label={status === 'connected' ? 'Awaiting agent activity…' : 'Connecting to live stream…'}
-          />
+        {rows.length === 0 ? (
+          emptyState()
         ) : (
           <ol className="relative">
             {rows.map(({ evt, node }) => (
