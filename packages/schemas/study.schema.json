@@ -19,7 +19,7 @@
         "metric_rationale": { "type": "string" },
         "budget": { "type": "object", "properties": { "max_trials": { "type": "integer" }, "budget_seconds": { "type": "integer" } } },
         "rubric": { "type": "string", "default": "docs/rubric.json" },
-        "status": { "type": "string", "enum": ["open", "done", "stopped"], "default": "open" }
+        "status": { "type": "string", "enum": ["open", "running", "done", "stopped"], "default": "open" }
       }
     },
     "hypothesis": {
@@ -33,7 +33,7 @@
         "model_family": { "type": "string" },
         "features": { "type": "array", "items": { "type": "string" } },
         "expected_outcome": { "type": "string" },
-        "status": { "type": "string", "enum": ["proposed", "approved", "rejected"] }
+        "status": { "type": "string", "enum": ["proposed", "approved", "tested", "rejected"] }
       }
     },
     "run": {
@@ -50,6 +50,7 @@
         "params": { "type": "object" },
         "artifacts": { "type": "object" },
         "rationale": { "type": "string", "description": "What this run tests and why." },
+        "applied_feedback_id": { "type": "string", "description": "Human feedback id whose parsed constraints shaped this run." },
         "tags": { "type": "array", "items": { "type": "string" } },
         "executor": { "type": "string", "const": "modal-runner" },
         "dataset_hash": { "type": "string" },
@@ -89,7 +90,7 @@
         "id": { "type": "string" },
         "study_id": { "type": "string" },
         "target_id": { "type": "string" },
-        "type": { "type": "string", "enum": ["approval", "ban_feature", "change_metric", "increase_budget", "focus_segment", "note"] },
+        "type": { "type": "string", "enum": ["approval", "ban_feature", "change_metric", "increase_budget", "focus_segment", "note", "human_feedback"] },
         "scope": { "type": "string" },
         "content": { "type": "string" },
         "parsed_constraints": { "type": "object", "description": "e.g. { primary_metric: 'recall', guardrail: 'false_positive_rate <= 0.20' }" }

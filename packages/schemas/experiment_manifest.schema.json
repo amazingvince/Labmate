@@ -60,7 +60,8 @@
       "required": ["primary"],
       "properties": {
         "primary": { "type": "string", "examples": ["recall_at_fpr", "pr_auc", "roc_auc", "rmse", "mae"] },
-        "max_fpr": { "type": "number", "description": "Guardrail for recall_at_fpr." }
+        "max_fpr": { "type": "number", "description": "The FPR guardrail bound the runner enforces (e.g. 0.20)." },
+        "primary_metric": { "type": "string", "description": "The primary metric the runner optimizes/reports (e.g. recall)." }
       }
     },
     "applied_feedback_id": { "type": "string", "description": "Human feedback id whose parsed constraint shaped this manifest." },

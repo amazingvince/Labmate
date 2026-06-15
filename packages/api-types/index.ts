@@ -328,7 +328,7 @@ export interface components {
              * @default open
              * @enum {string}
              */
-            status: "open" | "done" | "stopped";
+            status: "open" | "running" | "done" | "stopped";
             constraints?: components["schemas"]["Constraints"];
             /** Format: date-time */
             created_at?: string;
@@ -405,7 +405,7 @@ export interface components {
             features?: string[];
             expected_outcome?: string;
             /** @enum {string} */
-            status?: "proposed" | "approved" | "rejected";
+            status?: "proposed" | "approved" | "tested" | "rejected";
             /** Format: date-time */
             created_at?: string;
         };
@@ -441,7 +441,10 @@ export interface components {
              * @example mae
              */
             primary: string;
+            /** @description The FPR guardrail bound the runner enforces (e.g. 0.20). */
             max_fpr?: number;
+            /** @description The primary metric the runner optimizes/reports (e.g. recall). */
+            primary_metric?: string;
         };
         /** @description An experiment to run in the Modal sandbox. Two mutually exclusive modes (script XOR model): supply `script` — an agent-authored Python training program the network-isolated Modal Sandbox runs — OR `model` + `metric` for the legacy manifest→sklearn path. `study_id`, `hypothesis_id`, `dataset_uri`, `target`, `task_type`, `split`, and `features` are required in both modes. */
         ExperimentManifest: {
@@ -496,6 +499,8 @@ export interface components {
             };
             /** @description What this run tests and why. */
             rationale?: string;
+            /** @description Human feedback id whose parsed constraints shaped this run. */
+            applied_feedback_id?: string;
             tags?: string[];
             /** @constant */
             executor?: "modal-runner";
@@ -534,7 +539,7 @@ export interface components {
             study_id: string;
             target_id?: string;
             /** @enum {string} */
-            type: "approval" | "ban_feature" | "change_metric" | "increase_budget" | "focus_segment" | "note";
+            type: "approval" | "ban_feature" | "change_metric" | "increase_budget" | "focus_segment" | "note" | "human_feedback";
             /** @enum {string} */
             scope?: "study" | "hypothesis" | "run" | "experiment";
             content: string;
@@ -560,7 +565,18 @@ export interface components {
             dataset_hash?: string;
             code_hash?: string;
             seed?: number;
+            /** @description Free-form artifact metadata. For a report artifact this carries the model-card provenance fields below. */
             meta?: {
+                /** @description Run with the best validation metric. */
+                best_run_id?: string;
+                /** @description The run a decision promoted (may differ from best). */
+                promoted_run_id?: string;
+                /** @description The baseline the report compares the best/promoted run to. */
+                baseline_run_id?: string;
+                compares_best_to_baseline?: boolean;
+                reproducible_command?: string;
+                /** @enum {string} */
+                report_type?: "model_card" | "summary";
                 [key: string]: unknown;
             };
             /** Format: date-time */
@@ -671,7 +687,7 @@ export interface operations {
     listStudies: {
         parameters: {
             query?: {
-                status?: "open" | "done" | "stopped";
+                status?: "open" | "running" | "done" | "stopped";
                 limit?: number;
             };
             header?: never;
@@ -932,6 +948,8 @@ export interface operations {
                     manifest: components["schemas"]["ExperimentManifest"];
                     /** @description The approval authorizing this compute. */
                     approval_id?: string;
+                    /** @description Human feedback id whose parsed constraints shaped this run; recorded on the resulting Run. */
+                    applied_feedback_id?: string;
                 };
             };
         };
