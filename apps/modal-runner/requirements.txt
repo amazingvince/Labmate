@@ -1,6 +1,12 @@
 # Modal runner — local tooling. The training deps are installed inside the Modal image
 # (see runner.py), not here. This file is for the local CLI / dataset generation.
-modal>=0.64
-pandas>=2.0
-numpy>=1.26
-scikit-learn>=1.4
+#
+# Versions are PINNED (exact ==) for honest provenance: this exact set is folded into
+# code_hash (see runner.py _DEPS_PINS / _CODE_HASH), so a run's provenance reflects the
+# deps it ran against, not just the runner source. Keep these in sync with the image
+# pins in runner.py (_DEPS_PINS).
+modal==0.64.0
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.4.2
+optuna==3.6.1
