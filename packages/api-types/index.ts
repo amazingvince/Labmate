@@ -117,6 +117,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/datasets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload + profile a dataset CSV (upload_dataset)
+         * @description Token-gated write. Accepts a raw `text/csv` body (with optional `?dataset_id=` and `?target=` query params) OR a JSON body `{ dataset_id?, csv, target? }`. Stores the CSV in R2 at `datasets/{dataset_id}.csv`, upserts a row in the `dataset` catalog (content hash, row count, cached profile), and returns `{ dataset_id, profile }` where `profile` is the REAL profiling result produced by `profileCsv` (per-column dtype, missingness, cardinality, example values, leakage flags, a suggested split, and suggested categoricals/datetime columns). Idempotent on a given `dataset_id` (re-upload overwrites the R2 object and updates the catalog row). The `target` is optional — name-pattern leakage detection always runs; supplying it additionally enables the near-perfect-separation heuristic.
+         */
+        post: operations["uploadDataset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/experiments/propose": {
         parameters: {
             query?: never;
@@ -394,6 +414,82 @@ export interface components {
             dataset_uri?: string;
             /** Format: date-time */
             created_at?: string;
+        };
+        /** @description One profiled column from `profileCsv` (apps/web/src/profiles.js) — a row of `DatasetProfile.columns`. Distinct from `ColumnProfile` (the persisted dataset_version column shape): this carries the additive real-profiling fields the cockpit renders (missing_pct, cardinality, example_values). */
+        ProfileColumn: {
+            name: string;
+            /**
+             * @description Inferred over the non-blank sample.
+             * @enum {string}
+             */
+            dtype: "numeric" | "categorical" | "datetime" | "boolean" | "text";
+            /** @description Fraction of rows missing this column, rounded to 4 dp. */
+            missing_fraction: number;
+            /** @description missing_fraction * 100, pre-rounded by the Worker. */
+            missing_pct: number;
+            /** @description Distinct non-blank values in the sample. */
+            cardinality: number;
+            /** @description Same as `cardinality` (kept for parity with ColumnProfile). */
+            n_unique: number;
+            /** @description Up to 5 distinct example values. */
+            example_values: string[];
+            /**
+             * @description Flagged by name pattern OR near-perfect target separation.
+             * @default false
+             */
+            is_candidate_leakage: boolean;
+            /** @description Present only when `is_candidate_leakage` is true. */
+            leakage_reason?: string;
+        };
+        /** @description The suggested split `profileCsv` attaches. Unlike SplitStrategy this allows the `random` fallback used when no usable creation-time column exists. */
+        ProfileSplit: {
+            /** @enum {string} */
+            strategy: "time_based" | "random";
+            /** @description Present only for a time_based split. */
+            time_col?: string;
+            /** @description [train, validation, test] */
+            ratios: number[];
+            /** @default 42 */
+            seed: number;
+        };
+        /** @description The `profile` object returned by `POST /api/datasets` (the `profileCsv` output in apps/web/src/profiles.js). It is the real, per-upload profiling result the cockpit consumes — a superset of the persisted DatasetVersion contract, plus the additive fields (categorical_features, datetime_columns, sampled, per-column example_values). */
+        DatasetProfile: {
+            dataset_id: string;
+            /** @description Rows observed in the (possibly sampled) CSV. */
+            row_count: number;
+            /** @description The target column name, or null when none was supplied. */
+            target: string | null;
+            /** @description A human-authored definition; null for a fresh upload. */
+            target_definition?: string | null;
+            leakage_candidates: string[];
+            safe_features: string[];
+            /** @description Suggested categoricals (categorical + boolean columns). Omitted on an empty CSV. */
+            categorical_features?: string[];
+            /** @description Detected datetime columns. Omitted on an empty CSV. */
+            datetime_columns?: string[];
+            split: components["schemas"]["ProfileSplit"];
+            columns: components["schemas"]["ProfileColumn"][];
+            /** @description True when the CSV was truncated to the profiling row cap (5000). */
+            sampled?: boolean;
+        };
+        /** @description A row of the `dataset` catalog (apps/web/schema.sql) — an UPLOADED dataset, distinct from the per-study DatasetVersion. Records the CSV's content hash and the cached `profileCsv` result so a study can attach to it by dataset_id. */
+        Dataset: {
+            /** @description dataset_<ulid> or a caller-supplied, sanitized id. */
+            id: string;
+            /** @enum {string} */
+            source?: "uploaded" | "bundled";
+            /** @description sha256 of the raw CSV bytes. */
+            content_hash?: string;
+            /** @description Rows observed (sampled, capped). */
+            row_count?: number;
+            /** @description Optional target hint used for leakage scoring. */
+            target?: string | null;
+            /** @description The cached profileCsv() result (stored as profile_json in D1). Surfaced as a structured object here. */
+            profile?: components["schemas"]["DatasetProfile"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at?: string;
         };
         Hypothesis: {
             id: string;
@@ -860,6 +956,49 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    uploadDataset: {
+        parameters: {
+            query?: {
+                /** @description Optional R2-safe id for the dataset (sanitized server-side to `[A-Za-z0-9._-]`). The server assigns `dataset_<ulid>` when omitted. A `dataset_id` in the JSON body takes precedence over this query param. */
+                dataset_id?: string;
+                /** @description Optional target column name, used to drive the leakage-by-separation heuristic. The JSON body's `target` overrides this when present. */
+                target?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /** @description The raw CSV text (header row + data rows). */
+                "text/csv": string;
+                "application/json": {
+                    /** @description The raw CSV text (header row + data rows). */
+                    csv: string;
+                    /** @description Optional R2-safe id; the server assigns one when omitted. */
+                    dataset_id?: string;
+                    /** @description Optional target column for separation-based leakage scoring. */
+                    target?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Dataset stored and profiled. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        dataset_id: string;
+                        profile: components["schemas"]["DatasetProfile"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
         };
     };
     proposeExperiments: {
