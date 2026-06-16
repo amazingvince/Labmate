@@ -6,6 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, HttpError } from './client'
 import type { Hypothesis, Study, StudyDetail } from './types'
+import type { UploadDatasetOpts, UploadDatasetResponse } from './datasets'
 import { isActiveStatus, parseConstraints } from '../lib/derive'
 import { hasApiToken } from './token'
 import { localFeedback, useOverlay, type UndoContext } from '../state/overlay'
@@ -85,6 +86,24 @@ class LockedError extends Error {
     super(NO_TOKEN_MSG)
     this.name = 'LockedError'
   }
+}
+
+/**
+ * Upload a CSV and get its server-side profile. Token-gated (the route is a
+ * write): without a token we short-circuit with a LockedError so the UI can
+ * prompt to Unlock rather than firing a request that 401s. The mutation is
+ * stateless w.r.t. the study cache (no overlay), so callers read profile/error
+ * straight off the returned mutation object.
+ */
+export function useUploadDataset() {
+  const toast = useToast()
+  return useMutation<UploadDatasetResponse, unknown, { csv: string; opts?: UploadDatasetOpts }>({
+    mutationFn: ({ csv, opts }) => {
+      if (!hasApiToken()) throw new LockedError()
+      return api.uploadDataset(csv, opts)
+    },
+    onError: (err) => toast.push('err', describeError(err)),
+  })
 }
 
 /** All write actions for one study, with optimistic overlay + rollback + toasts. */

@@ -30,6 +30,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { UploadStudyView } from '@/components/views/UploadStudyView'
+import { cn } from '@/lib/utils'
+
+type StudyMode = 'manual' | 'upload'
 
 function Field({
   label,
@@ -53,7 +57,34 @@ function Field({
   )
 }
 
+/** A small segmented control to switch between the manual and CSV-upload paths. */
+function ModeTabs({ mode, onChange }: { mode: StudyMode; onChange: (m: StudyMode) => void }) {
+  const tab = (value: StudyMode, label: string) => (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={mode === value}
+      onClick={() => onChange(value)}
+      className={cn(
+        'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+        mode === value
+          ? 'bg-background text-foreground shadow-sm'
+          : 'text-muted-foreground hover:text-foreground',
+      )}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div role="tablist" className="mb-6 inline-flex gap-1 rounded-lg border bg-muted/50 p-1">
+      {tab('manual', 'Manual entry')}
+      {tab('upload', 'Upload a CSV')}
+    </div>
+  )
+}
+
 export function NewStudyView() {
+  const [mode, setMode] = useState<StudyMode>('manual')
   const [input, setInput] = useState<CreateStudyInput>(BLANK_INPUT)
   const create = useCreateStudy()
   const set = (patch: Partial<CreateStudyInput>) => setInput((cur) => ({ ...cur, ...patch }))
@@ -81,6 +112,12 @@ export function NewStudyView() {
           </p>
         </div>
 
+        <ModeTabs mode={mode} onChange={setMode} />
+
+        {mode === 'upload' ? (
+          <UploadStudyView />
+        ) : (
+          <>
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between gap-3">
@@ -239,6 +276,8 @@ export function NewStudyView() {
             )}
           </Button>
         </div>
+          </>
+        )}
       </div>
     </AppShell>
   )

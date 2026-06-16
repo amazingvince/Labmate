@@ -20,6 +20,11 @@ import type {
   StudyDetail,
   StudyListResponse,
 } from './types'
+import {
+  uploadDataset as uploadDatasetCsv,
+  type UploadDatasetOpts,
+  type UploadDatasetResponse,
+} from './datasets'
 
 const RAW_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:4010'
 export const API_BASE = RAW_BASE.replace(/\/+$/, '')
@@ -145,5 +150,10 @@ export const api = {
 
   proposeExperiments(study_id: string, n = 6): Promise<ProposeExperimentsResponse> {
     return post<ProposeExperimentsResponse>('/api/experiments/propose', { study_id, n })
+  },
+
+  /** Upload a raw CSV and get its server-side profile (token-gated write). */
+  uploadDataset(csv: string, opts?: UploadDatasetOpts): Promise<UploadDatasetResponse> {
+    return uploadDatasetCsv(csv, opts)
   },
 }
