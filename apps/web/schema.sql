@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS dataset_version (
   seed            INTEGER,
   leakage_candidates_json TEXT,               -- ["resolved_at", ...]
   banned_columns_json     TEXT,
+  data_contract_json   TEXT,                  -- generated PER-STUDY data contract (contracts.js)
+  metric_contract_json TEXT,                  -- generated PER-STUDY metric contract (contracts.js)
   created_at      TEXT NOT NULL
 );
 

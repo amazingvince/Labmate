@@ -211,6 +211,44 @@ test("study on an uploaded dataset profiles for real (not the sla_tickets profil
   assert.ok(r.json.leakage_candidates.includes("account_closed_date"));
   assert.ok(r.json.banned_columns.includes("account_closed_date"), "leakage defaults to banned");
   assert.equal(r.json.split_strategy.strategy, "time_based");
+
+  // SLICE 2 — /api/profile returns the generated PER-STUDY data + metric contract.
+  assert.ok(r.json.contracts, "profile response carries generated contracts");
+  const dc = r.json.contracts.data;
+  assert.equal(dc.target, "churned", "data contract names the target");
+  assert.equal(dc.split_strategy.strategy, "time_based");
+  assert.equal(dc.split_strategy.seed, 42);
+  const leakNames = dc.leakage_candidates.map((l) => l.column);
+  assert.ok(leakNames.includes("account_closed_date"), "leakage candidate listed in the contract");
+  assert.ok(dc.banned_columns.includes("account_closed_date"), "leakage candidate banned in the contract");
+  assert.ok(dc.safe_features.includes("plan"), "a real safe feature is picked");
+  const mc = r.json.contracts.metric;
+  assert.equal(mc.primary_metric, "recall", "metric contract carries the primary metric");
+  assert.equal(mc.task_type, "binary_classification");
+});
+
+test("GET /api/studies/{id} exposes the generated contracts on dataset_version", async (t) => {
+  if (!booted) return t.skip();
+  const r = await get(`/api/studies/${ctx.studyId}`);
+  assert.equal(r.status, 200);
+  const dv = r.json.dataset_version;
+  assert.ok(dv && dv.contracts, "dataset_version carries the generated contracts");
+  assert.equal(dv.contracts.data.target, "churned");
+  assert.equal(dv.contracts.data.split_strategy.strategy, "time_based");
+  assert.ok(dv.contracts.metric.primary_metric, "metric contract present");
+  // existing consumers unaffected: the legacy fields are still there.
+  assert.ok(Array.isArray(dv.columns) && dv.columns.length > 0);
+  assert.ok(Array.isArray(dv.banned_columns));
+});
+
+test("uploaded-dataset study still passes data_contract via the GENERATED contract", async (t) => {
+  if (!booted) return t.skip();
+  const r = await get(`/api/studies/${ctx.studyId}/grade`);
+  assert.equal(r.status, 200);
+  const byId = Object.fromEntries(r.json.checks.map((c) => [c.id, c]));
+  assert.equal(byId.data_contract.passed, true, byId.data_contract.detail);
+  // the detail reflects the generated contract (mentions the target + a leakage count)
+  assert.match(byId.data_contract.detail, /churned/, byId.data_contract.detail);
 });
 
 test("grade: data_contract + target_metric_documented PASS generically when config is complete", async (t) => {

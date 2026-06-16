@@ -30,6 +30,7 @@
 import rubric from "../../../docs/rubric.json";
 import schemaSQL from "../schema.sql";
 import { profileFor, profileCsv, hypothesisLibrary } from "./profiles.js";
+import { buildContracts } from "./contracts.js";
 import { evaluateRubric } from "./grade.js";
 
 // ---------------------------------------------------------------------------
@@ -206,6 +207,10 @@ let _schemaReady = null;
 // "duplicate column" error is swallowed, so this never aborts the base schema batch.
 const ADDITIVE_MIGRATIONS = [
   "ALTER TABLE run ADD COLUMN applied_feedback_id TEXT",
+  // Slice 2: the generated PER-STUDY data + metric contract, persisted on the
+  // dataset_version row so it is part of the reproducible ledger (not just a doc).
+  "ALTER TABLE dataset_version ADD COLUMN data_contract_json TEXT",
+  "ALTER TABLE dataset_version ADD COLUMN metric_contract_json TEXT",
 ];
 
 async function applyAdditiveMigrations(env) {
@@ -299,6 +304,8 @@ function mapStudy(row) {
 
 function mapDatasetVersion(row) {
   if (!row) return null;
+  const dataContract = parse(row.data_contract_json);
+  const metricContract = parse(row.metric_contract_json);
   return compact({
     id: row.id,
     study_id: row.study_id,
@@ -310,6 +317,12 @@ function mapDatasetVersion(row) {
     // extra (allowed) fields the cockpit + grader use:
     leakage_candidates: parse(row.leakage_candidates_json) || [],
     banned_columns: parse(row.banned_columns_json) || [],
+    // The generated PER-STUDY contracts (data + metric). compact() drops them when null
+    // (old dataset_version rows written before slice 2) — existing consumers unaffected.
+    contracts:
+      dataContract || metricContract
+        ? compact({ data: dataContract, metric: metricContract })
+        : undefined,
     created_at: row.created_at,
   });
 }
@@ -708,12 +721,18 @@ async function profileDataset(env, body) {
   const banned = [...new Set([...(constraints.banned_columns || []), ...leakage])];
   const split = profile.split;
 
+  // Generate the PER-STUDY data + metric contract deterministically from the study
+  // config + resolved profile. This is the "contract is the product" artifact — it
+  // works for ANY uploaded dataset, not just the committed golden sla_tickets docs.
+  const contracts = buildContracts(study, profile, constraints);
+
   const id = newId("ds");
   const created = nowIso();
   await env.DB.prepare(
     `INSERT INTO dataset_version (id, study_id, file_hash, row_count, columns_json, target_definition,
-       split_strategy, split_json, seed, leakage_candidates_json, banned_columns_json, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+       split_strategy, split_json, seed, leakage_candidates_json, banned_columns_json,
+       data_contract_json, metric_contract_json, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       id,
@@ -727,9 +746,25 @@ async function profileDataset(env, body) {
       split?.seed ?? null,
       JSON.stringify(leakage),
       JSON.stringify(banned),
+      JSON.stringify(contracts.data),
+      JSON.stringify(contracts.metric),
       created,
     )
     .run();
+
+  // Persist the generated contract as a study-scoped R2 artifact so it lives in the
+  // ledger alongside reports/plots (best-effort — never block the DB write on R2).
+  if (env.ARTIFACTS) {
+    try {
+      await env.ARTIFACTS.put(
+        `studies/${study.id}/contract/data_metric_contract.json`,
+        JSON.stringify({ dataset_version_id: id, file_hash: fileHash, ...contracts }, null, 2),
+        { httpMetadata: { contentType: "application/json" } },
+      );
+    } catch {
+      // R2 unbound / transient — the contract is still persisted on the dataset_version row.
+    }
+  }
 
   return json(
     compact({
@@ -742,6 +777,8 @@ async function profileDataset(env, body) {
       split_strategy: split,
       leakage_candidates: leakage,
       banned_columns: banned,
+      // The generated per-study contract (data + metric) — the cockpit and report read this.
+      contracts,
       // The agent copies this onto launch_experiment manifests so the runner can
       // fetch the CSV (launch also default-fills it if the manifest omits it).
       dataset_uri: datasetUriFor(env, study),
@@ -1542,19 +1579,33 @@ function buildModelCard(study, dv, L, best, baseline, opts = {}) {
   const split = (dv && dv.split_strategy) || {};
   const reproCmd = "node .claude/workflows/run-study.js examples/" + study.dataset_id;
 
+  // Generated per-study contracts (slice 2). Surface their key facts in the card so the
+  // report's provenance reflects the actual contract, for any dataset.
+  const dataContract = (dv && dv.contracts && dv.contracts.data) || null;
+  const metricContract = (dv && dv.contracts && dv.contracts.metric) || null;
+  const leakageLines = dataContract && dataContract.leakage_candidates && dataContract.leakage_candidates.length
+    ? dataContract.leakage_candidates
+        .map((l) => `  - \`${l.column}\`${l.reason ? ` — ${l.reason}` : ""}`)
+        .join("\n")
+    : null;
+  const predictionTime = dataContract ? dataContract.prediction_time_assumption : null;
+  const guardrailLine = metricContract && metricContract.guardrails && metricContract.guardrails.length
+    ? metricContract.guardrails.join("; ")
+    : "none";
+
   return `# Model card — ${study.id}
 
 ## Objective
 ${study.brief}
 
 - **Target:** \`${study.target}\`
-- **Primary metric:** ${study.metric}${study.metric_rationale ? ` — ${study.metric_rationale}` : ""}
+- **Primary metric:** ${(metricContract && metricContract.primary_metric) || study.metric}${study.metric_rationale ? ` — ${study.metric_rationale}` : ""}
 
 ## Data
 - **Dataset:** ${study.dataset_id} (${dv ? dv.row_count : "?"} rows)
 - **Split:** ${split.strategy || "?"}${split.time_col ? ` on \`${split.time_col}\`` : ""}, ratios ${JSON.stringify(split.ratios || [])}, seed ${split.seed}
 - **Banned / leakage columns:** ${(dv && dv.banned_columns || []).join(", ") || "none"}
-- **Target definition:** ${(dv && dv.target_definition) || "n/a"}
+- **Target definition:** ${(dv && dv.target_definition) || "n/a"}${predictionTime ? `\n- **Prediction time:** ${predictionTime}` : ""}${leakageLines ? `\n- **Leakage candidates (banned):**\n${leakageLines}` : ""}${metricContract ? `\n- **Metric guardrails:** ${guardrailLine}` : ""}
 
 ## Experiments
 | run | model | tags | metrics | status |

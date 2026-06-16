@@ -55,11 +55,29 @@ export function evaluateRubric(rubric, L) {
       // config + profile, not from any hardcoded (sla_tickets) assumption.
       const cols = (dv && dv.columns) || [];
       const sp = dv && dv.split_strategy;
-      const ok = !!(dv && cols.length > 0 && sp && sp.strategy);
       if (!dv) return [false, "no data contract written"];
       if (!cols.length) return [false, `dataset version ${dv.id} has no columns profiled`];
       if (!(sp && sp.strategy)) return [false, `dataset version ${dv.id} has no split strategy`];
-      return [ok, `dataset version ${dv.id}: ${cols.length} columns, ${sp.strategy} split`];
+
+      // When the generated PER-STUDY contract is present, require its load-bearing fields
+      // (target + split with a seed). This is satisfied by the generated contract, not
+      // only the bundled doc, and works for any uploaded dataset.
+      const dc = dv.contracts && dv.contracts.data;
+      if (dc) {
+        const missing = [];
+        if (!dc.target) missing.push("target");
+        if (!(dc.split_strategy && dc.split_strategy.strategy)) missing.push("split strategy");
+        if (!(dc.split_strategy && dc.split_strategy.seed !== undefined && dc.split_strategy.seed !== null))
+          missing.push("split seed");
+        if (!Array.isArray(dc.safe_features)) missing.push("safe_features");
+        if (missing.length) return [false, `generated data contract missing: ${missing.join(", ")}`];
+        return [
+          true,
+          `data contract for \`${dc.target}\`: ${cols.length} columns, ${dc.split_strategy.strategy} split (seed ${dc.split_strategy.seed}), ` +
+            `${(dc.leakage_candidates || []).length} leakage candidate(s) banned`,
+        ];
+      }
+      return [true, `dataset version ${dv.id}: ${cols.length} columns, ${sp.strategy} split`];
     },
     five_experiments: () => [hypotheses.length >= 5, `${hypotheses.length} hypotheses proposed`],
     human_can_act: () => [feedback.length >= 1, `${feedback.length} feedback/approval events`],
