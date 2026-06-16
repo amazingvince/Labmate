@@ -1,0 +1,16 @@
+# pre-commit hooks for Labmate. Enable once with:
+#   pip install pre-commit   (or: brew install pre-commit)
+#   pre-commit install
+# Then gitleaks runs automatically on every `git commit`. Run on the whole repo with:
+#   pre-commit run --all-files
+#
+# Docs: https://pre-commit.com  ·  https://github.com/gitleaks/gitleaks
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+        name: Detect hardcoded secrets (gitleaks)
+        # Use the repo's config so the Labmate-specific rules (LABMATE_INTERNAL_TOKEN,
+        # Anthropic, Modal) are applied. --redact keeps any match out of the output.
+        args: ["protect", "--staged", "--redact", "--config", ".gitleaks.toml"]

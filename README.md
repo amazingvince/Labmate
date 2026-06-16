@@ -68,9 +68,10 @@ The whole study is driven by a single `/goal` ([`docs/GOALS.md`](docs/GOALS.md))
 > feedback; and `grade_study_against_rubric` returns all required checks passing.
 
 ### 2. Rubric — "done" is verifiable by the model, not a human
-[`docs/rubric.json`](docs/rubric.json) is a machine-gradable definition of done: 24
-checks across Functional, DS-quality, Agent-native tracking, Orchestration, and
-Safety. `POST /api/grade` evaluates a study and returns pass/fail per check. The
+[`docs/rubric.json`](docs/rubric.json) is a machine-gradable definition of done: 25
+checks (24 required, 1 optional) across Functional, DS-quality, Agent-native
+tracking, Orchestration, and Safety. `POST /api/grade` evaluates a study and returns
+pass/fail per check. The
 keystone check, `caught_an_issue`, only passes if the agent caught and corrected a
 **real** methodological problem (leakage or test-set tuning) on its own — see
 [`docs/RUBRIC.md`](docs/RUBRIC.md).
@@ -118,7 +119,9 @@ Agent runtime (apps/agent-runtime)  — the bridge to a real Anthropic Managed A
    │   is injected as a user.message mid-run.
    ▼
 Modal runner (apps/modal-runner)  — the ONLY experiment executor: fixed runner.py
-       (sklearn / pandas / optuna). Rejects banned-column features and tune_on=test.
+       (sklearn / pandas / optuna). Physically strips banned columns from the data
+       server-side before training (they can't reach the model even if requested),
+       and rejects tune_on=test.
 ```
 
 Safety is structural, not advisory: the agent never runs arbitrary training code; it
@@ -150,7 +153,7 @@ labmate/
   .claude/
     agents/        ds-planner · experiment-runner · experiment-critic · report-writer
     skills/        tabular-ds-protocol · leakage-review · optuna-search · model-card
-    workflows/     run-study.js  (the orchestrated golden path)
+    workflows/     run-study.js  (headless golden-path replay — flat API driver, no subagents)
     settings.json  hooks: log every run, block destructive cmds, gate Modal jobs
   apps/
     cockpit/       React/TS mission-control SPA
@@ -180,7 +183,16 @@ npm run agent:bootstrap       # create the versioned agent + cloud environment (
 npm run demo:e2e              # drive the seeded study deterministically end to end
 ```
 
-Full runbook: [`HOWTO.md`](HOWTO.md). End-to-end architecture + the demo loop:
+Deploying the control plane also requires uploading the demo dataset into R2 so the
+Worker can serve it at `/data/sla_tickets.csv` (the runner fetches it from there):
+
+```bash
+npx wrangler r2 object put labmate-artifacts/datasets/sla_tickets.csv \
+  --file examples/sla_tickets/data.csv
+```
+
+Full runbook (D1/R2/Worker/Modal provisioning, the R2 upload step, and a Security
+section): [`HOWTO.md`](HOWTO.md). End-to-end architecture + the demo loop:
 [`docs/GOAL_E2E.md`](docs/GOAL_E2E.md).
 
 ---

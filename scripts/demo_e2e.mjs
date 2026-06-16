@@ -161,16 +161,32 @@ async function tailStream(studyId, onDone) {
     const frames = buf.split("\n\n");
     buf = frames.pop() ?? "";
     for (const f of frames) {
-      const line = f.split("\n").find((l) => l.startsWith("data: "));
-      if (!line) continue;
-      let evt;
-      try {
-        evt = JSON.parse(line.slice(6));
-      } catch {
-        continue;
+      const lines = f.split("\n");
+      // SSE frames may carry a named event (`event: done` / `event: error`) plus a
+      // `data:` payload. Read both: the event name is the authoritative terminal
+      // signal; the data payload is the JSON we log.
+      const eventName = (lines.find((l) => l.startsWith("event:")) || "").slice(6).trim();
+      const dataLine = lines.find((l) => l.startsWith("data: "));
+      let evt = null;
+      if (dataLine) {
+        try {
+          evt = JSON.parse(dataLine.slice(6));
+        } catch {
+          evt = null;
+        }
       }
-      log(evt);
-      if (evt.kind === "study.done" || evt.kind === "loop.finished") {
+      if (evt) log(evt);
+      // Terminal frames: the runtime now emits `event: done` / `event: error` to
+      // close the stream. Tolerate them whether or not a data payload is attached,
+      // and whether the terminal signal arrives as the SSE event name or in `kind`.
+      const kind = evt?.kind;
+      if (eventName === "error" || kind === "loop.error") {
+        const detail = evt?.error ?? evt?.detail ?? "(no detail)";
+        console.error(`  ❌ stream error: ${detail}`);
+        await onDone();
+        return;
+      }
+      if (eventName === "done" || kind === "study.done" || kind === "loop.finished") {
         await onDone();
         return;
       }

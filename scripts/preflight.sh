@@ -46,6 +46,27 @@ else
   warn "dataset missing — run: python3 scripts/gen_dataset.py"
 fi
 
+# The deployed Worker must serve the dataset from R2 at /data/sla_tickets.csv (the
+# runner fetches it from there). This is a separate step from `wrangler deploy` —
+# upload it with: wrangler r2 object put labmate-artifacts/datasets/sla_tickets.csv
+#   --file examples/sla_tickets/data.csv   (see HOWTO.md §3).
+if [ -n "${LABMATE_PUBLIC_URL:-}" ]; then
+  if echo "$LABMATE_PUBLIC_URL" | grep -Eq '127\.0\.0\.1|localhost|0\.0\.0\.0'; then
+    warn "LABMATE_PUBLIC_URL is local — skipping the /data/sla_tickets.csv reachability check"
+  elif command -v curl >/dev/null 2>&1; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${LABMATE_PUBLIC_URL%/}/data/sla_tickets.csv" 2>/dev/null || echo "000")
+    if [ "$code" = "200" ]; then
+      ok "GET \$LABMATE_PUBLIC_URL/data/sla_tickets.csv -> 200 (R2 dataset uploaded)"
+    else
+      warn "GET \$LABMATE_PUBLIC_URL/data/sla_tickets.csv -> $code — upload it: wrangler r2 object put labmate-artifacts/datasets/sla_tickets.csv --file examples/sla_tickets/data.csv (HOWTO.md §3)"
+    fi
+  else
+    warn "curl not found — cannot check /data/sla_tickets.csv reachability"
+  fi
+else
+  warn "LABMATE_PUBLIC_URL not set — skipping the /data/sla_tickets.csv reachability check (run after deploy + R2 upload)"
+fi
+
 echo "Scaffold:"
 [ -f CLAUDE.md ] && ok "CLAUDE.md" || bad "CLAUDE.md missing"
 [ -f docs/rubric.json ] && ok "docs/rubric.json" || bad "docs/rubric.json missing"

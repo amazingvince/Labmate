@@ -20,7 +20,8 @@ it believes, does, and is corrected on is captured in an **evidence ledger**.
 The whole build is governed by three machine-checkable things, which is also your
 Orchestration story for judging:
 
-1. **A rubric it grades itself against** — `docs/rubric.json` (25 checks).
+1. **A rubric it grades itself against** — `docs/rubric.json` (25 checks: 24
+   required, 1 optional).
 2. **A test suite + schema-check** — `npm run guard`.
 3. **A live URL** — the deployed Cloudflare Worker cockpit.
 
@@ -90,9 +91,19 @@ npx wrangler d1 execute labmate --file=./schema.sql     # apply the ledger schem
 # Cloudflare R2 (artifacts/reports/models)
 npx wrangler r2 bucket create labmate-artifacts
 
+# Upload the demo dataset into R2 so the Worker can serve it at /data/sla_tickets.csv
+# (the Modal runner fetches the dataset from there). Without this object the deploy is
+# live but the runner can't load the data — this step is REQUIRED, not optional.
+# Run it from the repo root, or adjust the --file path. Re-run after regenerating data.
+npx wrangler r2 object put labmate-artifacts/datasets/sla_tickets.csv \
+  --file ../../examples/sla_tickets/data.csv
+
 # Deploy the Worker cockpit (gives you LABMATE_PUBLIC_URL — your submission URL)
 npx wrangler deploy
 cd ../..
+
+# Verify the dataset is reachable (should print 200):
+curl -s -o /dev/null -w '%{http_code}\n' "$LABMATE_PUBLIC_URL/data/sla_tickets.csv"
 
 # Modal runner (sandboxed experiment execution)
 pip install modal && modal deploy apps/modal-runner/runner.py
@@ -209,7 +220,42 @@ the self-correction moment.
 
 ---
 
-## 9. Troubleshooting
+## 9. Security (secrets + token hygiene)
+
+Treat every key as live. A few rules the repo now enforces or assumes:
+
+- **Rotate live keys if they ever leak.** The `ANTHROPIC_API_KEY` and the Modal
+  tokens (`MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`) are real credentials. If any of
+  them ever appears in a shared artifact — a session log, a screen recording, a
+  pasted snippet, a committed file — **rotate it immediately** (regenerate in the
+  Anthropic console / `modal token new`) and update `.env`. Do not rely on it being
+  "just a demo key"; the Build-Day credit key still bills the credit.
+- **`LABMATE_INTERNAL_TOKEN` must have real entropy and is now enforced.** Generate
+  it with `openssl rand -hex 24` (≥24 bytes → 48 hex chars). The Worker **refuses
+  writes** (401) when the presented token is blank or too short — a short or empty
+  token is treated as no token, so every mutating API call is rejected. A token
+  drift between the MCP server / cockpit and the Worker secret shows up as 401s on
+  all writes; re-set the Worker secret to fix it.
+- **Never commit `.env` or `.dev.vars`.** They hold live secrets. Only the
+  `*.example` templates belong in git. They are already gitignored — keep it that
+  way.
+- **Enable the gitleaks pre-commit hook** so a stray secret can't be committed:
+
+  ```bash
+  pip install pre-commit          # or: brew install pre-commit
+  pre-commit install              # wires .pre-commit-config.yaml into git commit
+  pre-commit run --all-files      # one-off scan of the whole tree
+  ```
+
+  The hook runs gitleaks against `.gitleaks.toml`, which extends the default
+  ruleset and adds a rule for `LABMATE_INTERNAL_TOKEN` (plus Anthropic / Modal
+  patterns). It scans staged changes on every `git commit` and blocks the commit if
+  it finds a secret. The `*.example` templates and `docs/ENV.md` are allowlisted
+  (they show placeholders, not values).
+
+---
+
+## 10. Troubleshooting
 
 - **`npm install` fails on venue Wi-Fi** — retry; or `npm run setup --skip-install`
   to finish the rest, then install when the network is better.
@@ -220,6 +266,15 @@ the self-correction moment.
 - **Modal launch denied by a hook** — that's the approval gate working. Record
   the approval (cockpit / tell Claude) and retry. Check `LABMATE_MAX_JOB_SECONDS`
   and the per-study budget if it's a budget denial.
+- **The model-card "reproducible command" can't reproduce a promoted run** — by
+  design. `node .claude/workflows/run-study.js examples/sla_tickets` replays the
+  *study loop* from the dataset and spins up a **new** study (new IDs) via the
+  manifest path; it does not re-run one promoted script-path run, and it needs the
+  repo + a reachable control plane + the dataset. A judge holding only the live URL
+  can browse the ledger but cannot run that command — point them at the cockpit, and
+  keep the study id in the model card so the original run stays traceable. If you want
+  the command to work off a deployed plane, the dataset is served at
+  `{LABMATE_PUBLIC_URL}/data/sla_tickets.csv` (see §3).
 - **`grade_study.py` runs in dry mode** — it needs `LABMATE_PUBLIC_URL` set and
   the control plane reachable; until the Worker is deployed it just lists checks.
 - **Dataset looks different after regen** — run the dataset-contract test
@@ -230,7 +285,7 @@ the self-correction moment.
 
 ---
 
-## 10. The one-sentence pitch (memorize it)
+## 11. The one-sentence pitch (memorize it)
 
 > We built the missing harness for autonomous data science: Claude does the
 > profiling, planning, experiment execution, critique, and reporting, while the

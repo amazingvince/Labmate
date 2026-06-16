@@ -139,8 +139,10 @@ Read first, in this order:
 
 Hard rules (unchanged, enforced):
   1. The agent never runs arbitrary training code. It calls the custom tool
-     launch_experiment with a manifest; the Modal runner is the only executor and
-     rejects manifests with banned columns in features or tune_on=test.
+     launch_experiment with a manifest; the Modal runner is the only executor. It
+     physically strips banned columns from the data server-side before training (so
+     post-outcome fields can't reach the model even if a manifest lists them) and
+     rejects tune_on=test.
   2. Every run links to a hypothesis and carries rationale + provenance
      (dataset_hash, code_hash, seed). Every critique and decision is recorded.
   3. Compute is gated: launch_experiment requires a recorded approval; without one
@@ -183,8 +185,9 @@ Done means ALL of the following are true and verifiable:
     query_runs, record_critique, write_report — returning user.custom_tool_result
     each time, and persisting everything to the control plane over the OpenAPI
     contract.
-  - launch_experiment enforces the approval gate (402 without one) and the runner
-    rejects banned-column/tune_on=test manifests (422).
+  - launch_experiment enforces the approval gate (402 without one); the runner
+    strips banned columns server-side before training and rejects tune_on=test
+    manifests (422).
   - The cockpit, on a live study, shows streaming agent activity, a working
     "suggest changes" box that injects a user.message into the session, the run
     table updating as Modal jobs finish, and a final report+model link.
