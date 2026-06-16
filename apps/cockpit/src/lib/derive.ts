@@ -13,6 +13,7 @@ import type {
   CritiqueKind,
   Decision,
   Feedback,
+  Report,
   Run,
   RunStatus,
   Study,
@@ -223,6 +224,157 @@ export function guardrailFprBound(exprs: string[]): number | undefined {
 export function runTargetFpr(run: Run | undefined): number | undefined {
   const v = run?.metrics?.target_fpr
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+// ---------------------------------------------------------------------------
+// Leaderboard derivations — baseline, best, deltas, guardrail, applied feedback.
+// All pure + null-guarded so the table can render against partial live data.
+// ---------------------------------------------------------------------------
+
+/** A finite numeric metric off a run, or undefined. */
+function metricNumber(run: Run | undefined, key: string): number | undefined {
+  const v = run?.metrics?.[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+/** True when a run carries a dummy-baseline marker in its artifacts (the runner
+ *  stamps `artifacts.dummy` — a boolean flag on the shim, an object of baseline
+ *  metrics on the script path). Either truthy form counts. */
+function carriesDummyArtifact(run: Run): boolean {
+  const d = (run.artifacts as Record<string, unknown> | undefined)?.dummy
+  return Boolean(d)
+}
+
+/**
+ * The baseline run for a study: prefer one tagged `baseline`, else the one that
+ * carries a `dummy` artifact, else the chronologically-first run. The baseline is
+ * what every other run's primary metric is compared against.
+ */
+export function baselineRun(runs: Run[]): Run | undefined {
+  if (runs.length === 0) return undefined
+  const tagged = runs.find((r) => (r.tags ?? []).includes('baseline'))
+  if (tagged) return tagged
+  const dummy = runs.find(carriesDummyArtifact)
+  if (dummy) return dummy
+  return byCreatedAt(runs)[0]
+}
+
+/** A promoted run id from the decision log (the latest `promote` wins). */
+function promotedRunId(decisions: Decision[] | undefined): string | undefined {
+  let id: string | undefined
+  for (const d of byCreatedAt(decisions ?? [])) {
+    if (d.action === 'promote' && d.promoted_run_id) id = d.promoted_run_id
+  }
+  return id
+}
+
+/**
+ * The "best" run to star in the leaderboard. Resolution order:
+ *   1. `report.best_run_id` (the report's recorded winner), if it exists in `runs`
+ *   2. a promoted run from the decision log, if present
+ *   3. the non-baseline run with the max primary-metric value
+ * Returns undefined only when there are no eligible runs.
+ */
+export function bestRun(
+  runs: Run[],
+  primaryKey: string | undefined,
+  report?: Report,
+  decisions?: Decision[],
+): Run | undefined {
+  if (runs.length === 0) return undefined
+  const byId = (id?: string) => (id ? runs.find((r) => r.id === id) : undefined)
+
+  const reported = byId(report?.best_run_id)
+  if (reported) return reported
+  const promoted = byId(promotedRunId(decisions))
+  if (promoted) return promoted
+
+  const base = baselineRun(runs)
+  const candidates = runs.filter(
+    (r) => r.id !== base?.id && r.status === 'completed' && metricNumber(r, primaryKey ?? '') != null,
+  )
+  const pool = candidates.length ? candidates : runs.filter((r) => r.status === 'completed')
+  if (pool.length === 0) return undefined
+  // Max the primary metric. For error metrics (rmse/mae/brier/log_loss) lower is
+  // better, so flip the comparison.
+  const lowerIsBetter = isLowerBetter(primaryKey)
+  return pool.reduce((best, r) => {
+    const rv = metricNumber(r, primaryKey ?? '')
+    const bv = metricNumber(best, primaryKey ?? '')
+    if (rv == null) return best
+    if (bv == null) return r
+    return lowerIsBetter ? (rv < bv ? r : best) : rv > bv ? r : best
+  })
+}
+
+const LOWER_IS_BETTER = new Set(['rmse', 'mae', 'brier', 'log_loss', 'false_positive_rate', 'fpr'])
+
+/** Whether a metric is an error/loss where smaller is better. */
+export function isLowerBetter(key: string | undefined): boolean {
+  return key ? LOWER_IS_BETTER.has(key) : false
+}
+
+export type MetricDelta = { abs: number; pp: number; better: boolean }
+
+/**
+ * The delta of `run`'s metric vs the `baseline`'s, for `key`. `abs` is the raw
+ * difference; `pp` is the same expressed in percentage points (×100) for rates.
+ * `better` accounts for lower-is-better metrics. Returns undefined when either
+ * side is missing the metric (never invents a comparison).
+ */
+export function metricDelta(
+  run: Run | undefined,
+  baseline: Run | undefined,
+  key: string | undefined,
+): MetricDelta | undefined {
+  if (!key) return undefined
+  const rv = metricNumber(run, key)
+  const bv = metricNumber(baseline, key)
+  if (rv == null || bv == null) return undefined
+  const abs = rv - bv
+  const better = isLowerBetter(key) ? abs < 0 : abs > 0
+  return { abs, pp: abs * 100, better }
+}
+
+export type GuardrailStatus = {
+  /** true = satisfied, false = violated, undefined = not evaluable. */
+  satisfied: boolean | undefined
+  /** The run's actual false-positive rate, if reported. */
+  actualFpr: number | undefined
+  /** The study's FPR bound (ceiling), if one is in force. */
+  bound: number | undefined
+}
+
+/**
+ * Whether a run honors the study's FPR guardrail. Sources, in order:
+ *   1. an explicit `run.metrics.fpr_guardrail_satisfied` (1/0) if the runner
+ *      flattened it into metrics — rare, since the worker keeps `metrics`
+ *      numbers-only and the flag lives at result top-level
+ *   2. otherwise compare the run's `false_positive_rate` against the bound parsed
+ *      from `study.constraints.guardrails[].expr`
+ * Returns satisfied=undefined when neither the bound nor the FPR is known.
+ */
+export function guardrailStatus(run: Run, study: Study | undefined): GuardrailStatus {
+  const exprs = (study?.constraints?.guardrails ?? [])
+    .map((g) => g.expr)
+    .filter((e): e is string => typeof e === 'string')
+  const bound = guardrailFprBound(exprs)
+  const actualFpr = metricNumber(run, 'false_positive_rate')
+
+  const flag = run.metrics?.fpr_guardrail_satisfied
+  if (typeof flag === 'number') {
+    return { satisfied: flag === 1, actualFpr, bound }
+  }
+  if (bound != null && actualFpr != null) {
+    return { satisfied: actualFpr <= bound + 1e-9, actualFpr, bound }
+  }
+  return { satisfied: undefined, actualFpr, bound }
+}
+
+/** The Feedback entry whose parsed constraint shaped this run, if any. */
+export function appliedFeedback(run: Run, feedback: Feedback[] | undefined): Feedback | undefined {
+  if (!run.applied_feedback_id) return undefined
+  return (feedback ?? []).find((f) => f.id === run.applied_feedback_id)
 }
 
 /**

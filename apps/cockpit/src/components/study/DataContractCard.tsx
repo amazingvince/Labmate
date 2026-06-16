@@ -1,7 +1,7 @@
 /** The data contract: row count, split strategy, and the column table where
  *  leakage-flagged columns carry a [Ban] action (disabled until unlocked). */
 import { Loader2Icon, TriangleAlertIcon } from 'lucide-react'
-import type { DatasetVersion } from '@/api/types'
+import type { ColumnProfile, DatasetVersion } from '@/api/types'
 import type { StudyActions } from '@/api/hooks'
 import { useHasApiToken } from '@/api/token'
 import { shortId } from '@/lib/derive'
@@ -20,6 +20,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { EmptyCard } from '@/components/states/EmptyCard'
 import { cn } from '@/lib/utils'
 
+// Columns with a missing-fraction above this read as a data-quality warning.
+const HIGH_MISSING = 0.4
+
 function splitLine(ds: DatasetVersion): string | undefined {
   const s = ds.split_strategy
   if (!s) return undefined
@@ -27,6 +30,35 @@ function splitLine(ds: DatasetVersion): string | undefined {
     s.ratios?.length === 3 ? s.ratios.map((r) => Math.round(r * 100)).join('/') : undefined
   const col = s.time_col ? `(${s.time_col})` : ''
   return `${s.strategy}${col} ${ratios ?? ''} · seed ${s.seed}`.trim()
+}
+
+/**
+ * The cockpit's `profile_dataset` writes richer per-column stats (cardinality,
+ * example_values, missing_pct) than the canonical `ColumnProfile` type declares —
+ * they ride along on `dataset_version.columns`. Read them off defensively so a
+ * study profiled before they existed simply omits them.
+ */
+type RichColumn = ColumnProfile & {
+  cardinality?: number
+  missing_pct?: number
+  example_values?: unknown[]
+}
+
+function distinctCount(col: RichColumn): number | undefined {
+  const v = col.cardinality ?? col.n_unique
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+function missingFraction(col: RichColumn): number {
+  if (typeof col.missing_fraction === 'number') return col.missing_fraction
+  if (typeof col.missing_pct === 'number') return col.missing_pct / 100
+  return 0
+}
+
+function exampleValues(col: RichColumn): string[] {
+  return Array.isArray(col.example_values)
+    ? col.example_values.map((v) => String(v)).filter((s) => s.length > 0).slice(0, 5)
+    : []
 }
 
 export function DataContractCard({
@@ -82,20 +114,25 @@ export function DataContractCard({
           // overflow-x-auto (not overflow-hidden) so the table scrolls rather
           // than clips on narrow viewports.
           <div className="overflow-x-auto rounded-lg border">
-            <Table className="min-w-[32rem]">
+            <Table className="min-w-[40rem]">
               <TableHeader>
                 <TableRow>
                   <TableHead>Column</TableHead>
                   <TableHead>Type</TableHead>
+                  <TableHead className="text-right">Distinct</TableHead>
                   <TableHead>Missing</TableHead>
+                  <TableHead>Examples</TableHead>
                   <TableHead className="text-right" />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {columns.map((col, i) => {
+                {(columns as RichColumn[]).map((col, i) => {
                   const isBanned = banned.has(col.name)
                   const leaky = col.is_candidate_leakage || isBanned
-                  const miss = col.missing_fraction ?? 0
+                  const miss = missingFraction(col)
+                  const highMissing = miss > HIGH_MISSING
+                  const distinct = distinctCount(col)
+                  const examples = exampleValues(col)
                   return (
                     <TableRow
                       key={`${col.name}-${i}`}
@@ -120,18 +157,49 @@ export function DataContractCard({
                         </span>
                       </TableCell>
                       <TableCell className="text-muted-foreground">{col.dtype}</TableCell>
+                      <TableCell className="text-right font-mono text-xs tabular-nums text-muted-foreground">
+                        {distinct != null ? distinct.toLocaleString() : '—'}
+                      </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
-                          <span className="w-8 font-mono text-xs tabular-nums text-muted-foreground">
+                          <span
+                            className={cn(
+                              'w-8 font-mono text-xs tabular-nums',
+                              highMissing ? 'font-medium' : 'text-muted-foreground',
+                            )}
+                            style={highMissing ? { color: 'var(--amber)' } : undefined}
+                          >
                             {(miss * 100).toFixed(0)}%
                           </span>
                           <span className="h-1 w-12 overflow-hidden rounded-full bg-muted">
                             <span
-                              className="block h-full rounded-full bg-muted-foreground/60"
-                              style={{ width: `${Math.min(100, miss * 100)}%` }}
+                              className="block h-full rounded-full"
+                              style={{
+                                width: `${Math.min(100, miss * 100)}%`,
+                                backgroundColor: highMissing
+                                  ? 'var(--amber)'
+                                  : 'var(--muted-foreground)',
+                                opacity: highMissing ? 1 : 0.6,
+                              }}
                             />
                           </span>
                         </div>
+                      </TableCell>
+                      <TableCell>
+                        {examples.length ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="block max-w-[12rem] cursor-default truncate font-mono text-xs text-muted-foreground">
+                                {examples.join(', ')}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs">
+                              <span className="font-mono text-xs">{examples.join(', ')}</span>
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
                       </TableCell>
                       <TableCell className="text-right">
                         {isBanned ? (

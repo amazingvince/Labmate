@@ -1,7 +1,7 @@
 /** The grid of hypothesis cards, with a filter row. */
 import { useState } from 'react'
 import { FlaskConicalIcon } from 'lucide-react'
-import type { Hypothesis, Run } from '@/api/types'
+import type { Hypothesis, Run, Study } from '@/api/types'
 import type { StudyActions } from '@/api/hooks'
 import { runsForHypothesis } from '@/lib/derive'
 import { ExperimentCard } from '@/components/study/ExperimentCard'
@@ -26,6 +26,7 @@ function isFlagged(hyp: Hypothesis, runs: Run[]): boolean {
 export function ExperimentList({
   hypotheses = [],
   runs = [],
+  study,
   banned,
   reruns,
   actions,
@@ -33,6 +34,7 @@ export function ExperimentList({
 }: {
   hypotheses?: Hypothesis[]
   runs?: Run[]
+  study?: Study
   banned: Set<string>
   reruns: string[]
   actions: StudyActions
@@ -106,6 +108,7 @@ export function ExperimentList({
               key={hyp.id}
               hyp={hyp}
               runs={runs}
+              study={study}
               banned={banned}
               rerunRequested={reruns.includes(hyp.id)}
               actions={actions}

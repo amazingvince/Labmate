@@ -28,6 +28,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { EmptyCard } from '@/components/states/EmptyCard'
+import { CritiqueBadge } from '@/components/study/CritiqueBadge'
 import { ParsedConstraintChips } from '@/components/study/ParsedConstraintChips'
 
 const DECISION_ICON: Record<DecisionAction, LucideIcon> = {
@@ -86,17 +87,22 @@ function resolve(entry: LedgerEntry, metricKey?: string, report?: Report): Resol
     return {
       color: CRITIQUE_COLOR[c.kind],
       Icon: TriangleAlertIcon,
-      type: CRITIQUE_LABEL[c.kind],
+      type: 'Critique',
       body: (
         <>
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            {/* Standardized critique badge (kind dot + label), so every critique —
+                here, on cards, in the readiness rubric — reads the same. */}
+            <CritiqueBadge kind={c.kind} />
+            {c.led_to_decision && (
+              <Badge variant="secondary" className="capitalize">
+                {c.led_to_decision}
+              </Badge>
+            )}
+          </div>
           <span className="font-medium">{c.finding}</span>
           {c.recommendation && (
             <div className="mt-0.5 text-xs text-muted-foreground">→ {c.recommendation}</div>
-          )}
-          {c.led_to_decision && (
-            <Badge variant="secondary" className="ml-2 capitalize">
-              {c.led_to_decision}
-            </Badge>
           )}
         </>
       ),

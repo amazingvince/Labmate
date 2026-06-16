@@ -3,7 +3,7 @@
  *  hypothesis has a run (or status 'tested'), Approve/Deny are gone — only Rerun
  *  remains. Write controls are disabled until the operator unlocks. */
 import { Loader2Icon } from 'lucide-react'
-import type { Hypothesis, Run } from '@/api/types'
+import type { Hypothesis, Run, Study } from '@/api/types'
 import type { StudyActions } from '@/api/hooks'
 import { useHasApiToken } from '@/api/token'
 import { latestRun, pickPrimaryMetric, runsForHypothesis } from '@/lib/derive'
@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { MetricValue } from '@/components/study/MetricValue'
+import { GuardrailStatusBadge } from '@/components/study/GuardrailStatusBadge'
 import { cn } from '@/lib/utils'
 
 const LOCK_HINT = 'Unlock to enable writes'
@@ -98,6 +99,7 @@ function WriteButton({
 export function ExperimentCard({
   hyp,
   runs,
+  study,
   banned,
   rerunRequested,
   actions,
@@ -105,6 +107,7 @@ export function ExperimentCard({
 }: {
   hyp: Hypothesis
   runs: Run[]
+  study?: Study
   banned: Set<string>
   rerunRequested: boolean
   actions: StudyActions
@@ -172,11 +175,13 @@ export function ExperimentCard({
           ) : (
             <span className="text-xs text-muted-foreground">No run yet</span>
           )}
-          {rerunRequested && (
-            <Badge variant="secondary" className="shrink-0">
-              rerun requested
-            </Badge>
-          )}
+          <div className="flex shrink-0 items-center gap-2">
+            {/* The latest run's FPR-guardrail status, when one is reported. */}
+            {run && run.status === 'completed' && (
+              <GuardrailStatusBadge run={run} study={study} />
+            )}
+            {rerunRequested && <Badge variant="secondary">rerun requested</Badge>}
+          </div>
         </div>
 
         <div className="flex gap-2">

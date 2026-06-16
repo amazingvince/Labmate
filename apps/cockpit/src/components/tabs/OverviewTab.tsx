@@ -11,7 +11,15 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { runsForHypothesis } from '@/lib/derive'
+import {
+  baselineRun,
+  bestRun,
+  formatMetricValue,
+  metricDelta,
+  metricLabel,
+  primaryMetricKey,
+  runsForHypothesis,
+} from '@/lib/derive'
 import { BriefCard } from '@/components/study/BriefCard'
 import { ContractCard } from '@/components/study/ContractCard'
 import { ReadinessSummary } from '@/components/study/ReadinessRubric'
@@ -82,6 +90,13 @@ export function OverviewTab({
   // splitRecommendation returns verb='' for prose; show a sensible tile value.
   const recValue = verb || (recDetail ? 'Note' : '—')
 
+  // Best-vs-baseline, derived from the same helpers the leaderboard uses.
+  const metricKey = primaryMetricKey(study)
+  const baseline = baselineRun(runs)
+  const best = bestRun(runs, metricKey, report, detail.decisions)
+  const bestVal = metricKey ? best?.metrics?.[metricKey] : undefined
+  const bestDelta = metricKey ? metricDelta(best, baseline, metricKey) : undefined
+
   return (
     <div className="space-y-6">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -110,6 +125,27 @@ export function OverviewTab({
           sub={recDetail || undefined}
         />
       </div>
+
+      {metricKey && bestVal != null && (
+        <a
+          href={studyHref(studyId, 'experiments')}
+          className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <span>best vs baseline:</span>
+          <span className="font-mono text-foreground tabular-nums">
+            {metricLabel(metricKey)} {formatMetricValue(bestVal as number)}
+          </span>
+          {bestDelta && (
+            <span
+              className="font-mono tabular-nums"
+              style={bestDelta.better ? { color: 'var(--st-completed)' } : undefined}
+            >
+              ({bestDelta.abs >= 0 ? '+' : ''}
+              {formatMetricValue(bestDelta.abs)})
+            </span>
+          )}
+        </a>
+      )}
 
       <div className="grid items-start gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
