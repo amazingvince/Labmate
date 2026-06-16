@@ -4,6 +4,13 @@
  *
  *   node .claude/workflows/run-study.js examples/sla_tickets
  *
+ * NOTE: this is the HEADLESS, flat control-plane API driver — NOT the interactive
+ * Claude-Code path. It does not spawn the ds-planner / experiment-runner /
+ * experiment-critic / report-writer subagents and does not fire the
+ * .claude/settings.json hooks; it just POSTs the same sequence of API calls to
+ * reproduce the study deterministically. The subagents + hooks run when a human
+ * drives the loop interactively in Claude Code. Both paths rerun the same loop.
+ *
  * It drives the control-plane API end to end: create the study, profile the data,
  * propose hypotheses, gate compute behind a recorded approval, run a leakage review,
  * launch a baseline + experiments on the fixed Modal runner, let the critic catch the
@@ -70,6 +77,21 @@ async function main() {
   if (!TOKEN) throw new Error("LABMATE_INTERNAL_TOKEN is not set (env or .env).");
   log(`Labmate study loop → ${BASE}  (dataset: ${datasetId})`);
 
+  // Study constraints — the single source of truth for the metric + guardrail.
+  // The guardrail FPR bound (0.20) is what every manifest carries as metric.max_fpr
+  // so the runner enforces the same guardrail the worker validates against. Runs may
+  // *target* a tighter operating FPR (TARGET_FPR) when calibrating the threshold;
+  // both the bound and the operating point are reported.
+  const constraints = {
+    primary_metric: "recall",
+    guardrails: [{ expr: "false_positive_rate <= 0.20" }],
+    banned_columns: ["resolved_at", "time_to_resolution", "closed_status", "agent_notes_final"],
+  };
+  // Parse the FPR upper bound out of the guardrail expr (e.g. "...<= 0.20" -> 0.20).
+  const fprGuardrail = constraints.guardrails.find((g) => /false_positive_rate/.test(g.expr));
+  const MAX_FPR = fprGuardrail ? Number((fprGuardrail.expr.match(/<=?\s*([0-9.]+)/) || [])[1]) || 0.2 : 0.2;
+  const TARGET_FPR = Math.min(0.1, MAX_FPR); // tighter operating point; stays within the bound
+
   // 1. create_study
   const create = await api("POST", "/api/studies", {
     brief,
@@ -79,11 +101,7 @@ async function main() {
     target: "breached_sla",
     metric: "recall_at_fpr",
     metric_rationale: "Missed breaches are costlier than false alarms up to 20% FPR.",
-    constraints: {
-      primary_metric: "recall",
-      guardrails: [{ expr: "false_positive_rate <= 0.20" }],
-      banned_columns: ["resolved_at", "time_to_resolution", "closed_status", "agent_notes_final"],
-    },
+    constraints,
     budget: { max_trials: 20, budget_seconds: 600 },
   });
   const studyId = create.json.id;
@@ -146,9 +164,11 @@ async function main() {
           task_type: "binary_classification",
           split: { strategy: "time_based", time_col: "created_at", ratios: [0.7, 0.15, 0.15], seed: 42 },
           features: hyp.features && hyp.features.length ? hyp.features : ["priority", "customer_tier", "channel", "product_area", "region", "reporter_history_count", "queue_depth_at_creation", "is_reopen", "description_length", "business_hours_flag"],
-          banned_columns: ["resolved_at", "time_to_resolution", "closed_status", "agent_notes_final"],
+          banned_columns: constraints.banned_columns,
           model: { family },
-          metric: { primary: "recall_at_fpr", max_fpr: 0.2 },
+          // Guardrail bound (max_fpr) reaches the runner from the study constraints; the
+          // threshold is calibrated to the tighter operating point (target_fpr) on validation.
+          metric: { primary: "recall_at_fpr", primary_metric: constraints.primary_metric, max_fpr: MAX_FPR, target_fpr: TARGET_FPR },
           ...(appliedFeedbackId ? { applied_feedback_id: appliedFeedbackId } : {}),
           tags,
         },

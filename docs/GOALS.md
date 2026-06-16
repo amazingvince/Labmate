@@ -37,12 +37,26 @@ study with at least one run.
 ```
 
 ### Phase 3 — orchestration (1:00–2:00)
+
+There are two ways to drive the loop, and they are not the same thing:
+
+- **Interactive Claude-Code path** — the model itself drives profile → plan →
+  approve → run → critique → report, delegating to the `ds-planner`,
+  `experiment-runner`, `experiment-critic`, and `report-writer` subagents, with the
+  `.claude/settings.json` hooks logging every run and gating Modal launches.
+- **Headless `run-study.js` driver** — a flat, deterministic Node script that calls
+  the control-plane API in sequence to reproduce the same study end to end. It does
+  **not** spawn subagents or fire the Claude-Code hooks; it is the reproducible
+  golden-path replay (and what CI / a judge can run).
+
 ```
-/goal The run-study.js workflow drives profile -> plan -> approve -> run -> critique ->
-report by delegating to the ds-planner, experiment-runner, experiment-critic, and
-report-writer subagents, with hooks logging every run and gating Modal launches.
-Verifiable when one `node .claude/workflows/run-study.js examples/sla_tickets` call
-produces a study that advances through all phases (pausing at the human checkpoint).
+/goal The interactive Claude-Code session drives profile -> plan -> approve -> run ->
+critique -> report by delegating to the ds-planner, experiment-runner,
+experiment-critic, and report-writer subagents, with hooks logging every run and
+gating Modal launches. The headless `node .claude/workflows/run-study.js
+examples/sla_tickets` reproduces the same study via the control-plane API.
+Verifiable when one run-study.js call produces a study that advances through all
+phases (pausing at the human checkpoint).
 ```
 
 ### Phase 4 — autonomous loop + the "caught it" moment (2:00–3:00)

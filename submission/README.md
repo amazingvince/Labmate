@@ -25,7 +25,7 @@ documents, and iterates on tabular ML experiments. The **evidence ledger**
   (beta `managed-agents-2026-04-01`); IDs persisted in `.env`.
 - **Control plane** deployed on Cloudflare (Worker + D1 + R2 + Durable Object).
 - **Cockpit** built and served (`apps/cockpit/dist`).
-- **Modal runner** is the only experiment executor; rejects banned-column / `tune_on=test` manifests.
+- **Modal runner** is the only experiment executor; it physically strips banned columns from the data server-side before training (they never reach the model even if a manifest lists them) and rejects `tune_on=test` manifests.
 - **Self-correction loop passes in CI:** `npm run test:agent` → leaky launch rejected → corrected rerun → report → done.
 
 ## How to verify "done" without a human
