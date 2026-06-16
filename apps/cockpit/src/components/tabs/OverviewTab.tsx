@@ -93,7 +93,7 @@ export function OverviewTab({
   // Best-vs-baseline, derived from the same helpers the leaderboard uses.
   const metricKey = primaryMetricKey(study)
   const baseline = baselineRun(runs)
-  const best = bestRun(runs, metricKey, report, detail.decisions)
+  const best = bestRun(runs, metricKey, report, detail.decisions, detail.hypotheses)
   const bestVal = metricKey ? best?.metrics?.[metricKey] : undefined
   const bestDelta = metricKey ? metricDelta(best, baseline, metricKey) : undefined
 

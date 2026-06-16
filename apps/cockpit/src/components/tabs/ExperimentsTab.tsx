@@ -8,6 +8,8 @@ import {
   formatMetricValue,
   metricDelta,
   metricLabel,
+  pickPrimaryMetric,
+  primaryMetricKey,
   runsForHypothesis,
 } from '@/lib/derive'
 import { ExperimentList } from '@/components/study/ExperimentList'
@@ -29,8 +31,10 @@ function leaderboardSummary(detail: StudyDetail, metricKey?: string, report?: Re
   if (runs.length === 0 || !metricKey) return n
 
   const baseline = baselineRun(runs)
-  const best = bestRun(runs, metricKey, report, detail.decisions)
-  const bestVal = best?.metrics?.[metricKey]
+  const best = bestRun(runs, metricKey, report, detail.decisions, detail.hypotheses)
+  // Read the starred run's headline value the SAME key-tolerant way the column
+  // and `bestRun` do, so the summary number matches the row that's starred.
+  const bestVal = best ? pickPrimaryMetric(best, metricKey)?.value : undefined
   if (best == null || typeof bestVal !== 'number') return n
 
   const label = metricLabel(metricKey)
@@ -55,6 +59,10 @@ export function ExperimentsTab({
   const hyps = detail.hypotheses ?? []
   const runs = detail.runs ?? []
   const report = useReport(detail.study?.id).data ?? undefined
+  // Resolve the primary metric key the SAME way OverviewTab does
+  // (`primaryMetricKey(study)`), so the starred run + headline + table column all
+  // agree. Falls back to the prop the parent passed when the study isn't loaded.
+  const primaryKey = detail.study ? primaryMetricKey(detail.study) : metricKey
 
   // "ran" reconciles hypotheses against runs: a hypothesis with at least one run,
   // or a 'tested' status, counts as run.
@@ -76,11 +84,11 @@ export function ExperimentsTab({
           banned={banned}
           reruns={reruns}
           actions={actions}
-          metricKey={metricKey}
+          metricKey={primaryKey}
         />
       </section>
       <section className="space-y-4">
-        <SectionHeading title="Leaderboard" summary={leaderboardSummary(detail, metricKey, report)} />
+        <SectionHeading title="Leaderboard" summary={leaderboardSummary(detail, primaryKey, report)} />
         <RunsTable
           runs={detail.runs}
           hypotheses={detail.hypotheses}
@@ -88,7 +96,7 @@ export function ExperimentsTab({
           report={report}
           decisions={detail.decisions}
           feedback={detail.feedback}
-          metricKey={metricKey}
+          metricKey={primaryKey}
         />
       </section>
     </div>

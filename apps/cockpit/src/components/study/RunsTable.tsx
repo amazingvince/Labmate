@@ -348,8 +348,8 @@ export function RunsTable({
 
   const baseline = useMemo(() => baselineRun(runs), [runs])
   const best = useMemo(
-    () => bestRun(runs, metricKey, report, decisions),
-    [runs, metricKey, report, decisions],
+    () => bestRun(runs, metricKey, report, decisions, hypotheses),
+    [runs, metricKey, report, decisions, hypotheses],
   )
   const promotedId = useMemo(() => promotedFrom(decisions), [decisions])
 

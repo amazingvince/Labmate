@@ -13,6 +13,7 @@ import type {
   CritiqueKind,
   Decision,
   Feedback,
+  Hypothesis,
   Report,
   Run,
   RunStatus,
@@ -269,40 +270,71 @@ function promotedRunId(decisions: Decision[] | undefined): string | undefined {
 }
 
 /**
+ * A "dummy"/baseline-ish run that must never be starred as the study's best:
+ * a dummy-artifact marker, a `dummy`/`baseline` tag, or a model name/family that
+ * reads as a dummy. The model name lives on `params.model`; the family lives on
+ * the run's hypothesis (`model_family`), which is what the leaderboard renders
+ * when `params.model` is absent — so a smoke/dummy run shows "dummy" in the table
+ * and must be excluded here too. These are reference rows, not winners.
+ */
+function isDummyRun(run: Run, hypotheses?: Hypothesis[]): boolean {
+  if (carriesDummyArtifact(run)) return true
+  const tags = (run.tags ?? []).map((t) => String(t).toLowerCase())
+  if (tags.includes('dummy') || tags.includes('baseline')) return true
+  const model = run.params?.model
+  if (typeof model === 'string' && model.toLowerCase().includes('dummy')) return true
+  const family = hypotheses?.find((h) => h.id === run.hypothesis_id)?.model_family
+  if (typeof family === 'string' && family.toLowerCase().includes('dummy')) return true
+  return false
+}
+
+/**
  * The "best" run to star in the leaderboard. Resolution order:
- *   1. `report.best_run_id` (the report's recorded winner), if it exists in `runs`
- *   2. a promoted run from the decision log, if present
- *   3. the non-baseline run with the max primary-metric value
- * Returns undefined only when there are no eligible runs.
+ *   1. `report.best_run_id` (the report's recorded winner), if it's a REAL run
+ *   2. a promoted run from the decision log, if it's a REAL run
+ *   3. the real, non-baseline run with the best primary-metric value
+ * "Real" excludes the baseline and any dummy/baseline run (by tag, `params.model`,
+ * or hypothesis `model_family`), and requires a FINITE primary value resolved the
+ * SAME key-tolerant way the leaderboard column resolves it (`pickPrimaryMetric` —
+ * falls back to the run's first metric when the exact `primaryKey` is absent).
+ * Returns undefined when nothing qualifies — we render no star rather than falling
+ * back to "first completed run". A promoted or reported dummy is nonsensical, so
+ * those shortcuts only fire for an eligible run.
  */
 export function bestRun(
   runs: Run[],
   primaryKey: string | undefined,
   report?: Report,
   decisions?: Decision[],
+  hypotheses?: Hypothesis[],
 ): Run | undefined {
   if (runs.length === 0) return undefined
   const byId = (id?: string) => (id ? runs.find((r) => r.id === id) : undefined)
 
-  const reported = byId(report?.best_run_id)
-  if (reported) return reported
-  const promoted = byId(promotedRunId(decisions))
-  if (promoted) return promoted
-
   const base = baselineRun(runs)
-  const candidates = runs.filter(
-    (r) => r.id !== base?.id && r.status === 'completed' && metricNumber(r, primaryKey ?? '') != null,
-  )
-  const pool = candidates.length ? candidates : runs.filter((r) => r.status === 'completed')
-  if (pool.length === 0) return undefined
+  // Key-tolerant primary value, exactly as the leaderboard COLUMN resolves it.
+  const valueOf = (r: Run): number => pickPrimaryMetric(r, primaryKey)?.value ?? Number.NaN
+  const isEligible = (r: Run): boolean =>
+    r.id !== base?.id &&
+    r.status === 'completed' &&
+    !isDummyRun(r, hypotheses) &&
+    Number.isFinite(valueOf(r))
+
+  const reported = byId(report?.best_run_id)
+  if (reported && isEligible(reported)) return reported
+  const promoted = byId(promotedRunId(decisions))
+  if (promoted && isEligible(promoted)) return promoted
+
+  const candidates = runs.filter(isEligible)
+  if (candidates.length === 0) return undefined
   // Max the primary metric. For error metrics (rmse/mae/brier/log_loss) lower is
   // better, so flip the comparison.
   const lowerIsBetter = isLowerBetter(primaryKey)
-  return pool.reduce((best, r) => {
-    const rv = metricNumber(r, primaryKey ?? '')
-    const bv = metricNumber(best, primaryKey ?? '')
-    if (rv == null) return best
-    if (bv == null) return r
+  return candidates.reduce((best, r) => {
+    const rv = valueOf(r)
+    const bv = valueOf(best)
+    if (!Number.isFinite(rv)) return best
+    if (!Number.isFinite(bv)) return r
     return lowerIsBetter ? (rv < bv ? r : best) : rv > bv ? r : best
   })
 }
