@@ -36,7 +36,8 @@
     "agent:bootstrap": "node apps/agent-runtime/src/bootstrap.mjs",
     "agent:dev": "node apps/agent-runtime/src/server.mjs",
     "test:agent": "node --test apps/agent-runtime/tests/*.test.mjs",
-    "demo:e2e": "node scripts/demo_e2e.mjs"
+    "demo:e2e": "node scripts/demo_e2e.mjs",
+    "e2e:local": "bash scripts/e2e_local.sh"
   },
   "engines": {
     "node": ">=18.0.0",
