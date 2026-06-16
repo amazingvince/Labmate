@@ -10,7 +10,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { profileCsv, parseCsv, SLA_TICKETS_PROFILE } from "../apps/web/src/profiles.js";
+import {
+  profileCsv,
+  parseCsv,
+  SLA_TICKETS_PROFILE,
+  generatedHypothesisLibrary,
+} from "../apps/web/src/profiles.js";
 
 // A churn-style table with an OBVIOUS name-pattern leakage column
 // (`account_closed_date`) and a name-innocent column that PERFECTLY separates the
@@ -116,6 +121,86 @@ test("profileCsv: safe features exclude the target and leakage columns", () => {
   assert.ok(!p.safe_features.includes("churned"));
   assert.ok(!p.safe_features.includes("account_closed_date"));
   assert.ok(p.safe_features.includes("plan"));
+});
+
+// ---------------------------------------------------------------------------
+// generatedHypothesisLibrary — dataset-agnostic, baseline-first proposal
+// ---------------------------------------------------------------------------
+
+test("generatedHypothesisLibrary (classification): baseline-first, safe-feature-only cards", () => {
+  const p = profileCsv(bigChurn(), { target: "churned", datasetId: "churn" });
+  const cards = generatedHypothesisLibrary(p, {
+    taskType: "binary_classification",
+    target: "churned",
+    metric: "recall",
+    bannedColumns: [],
+  });
+
+  // >= 4 cards (baseline + 3 family/calibration cards)
+  assert.ok(cards.length >= 4, `expected >=4 cards, got ${cards.length}`);
+
+  // First card is the baseline using safe features only.
+  const first = cards[0];
+  assert.ok((first.tags || []).includes("baseline"), "first card tagged baseline");
+  assert.equal(first.model_family, "logistic_regression");
+  assert.ok(/baseline/i.test(first.statement));
+  assert.ok(first.features.length > 0 && first.features.includes("plan"));
+
+  // No card names a leakage / banned column or the target.
+  for (const c of cards) {
+    for (const leak of p.leakage_candidates) {
+      assert.ok(!c.features.includes(leak), `${leak} must not appear in a card`);
+    }
+    assert.ok(!c.features.includes("churned"), "target never a feature");
+    // every card references the study's target or metric in its text
+    assert.ok(/churned|recall/.test(c.statement), "card references the target or metric");
+  }
+
+  // Families match the classification task type (+ a calibration card).
+  const families = cards.map((c) => c.model_family);
+  assert.ok(families.includes("logistic_regression"));
+  assert.ok(families.includes("random_forest"));
+  assert.ok(families.includes("hist_gradient_boosting"));
+  assert.ok(cards.some((c) => (c.tags || []).includes("calibration")), "a calibration card exists");
+});
+
+test("generatedHypothesisLibrary (regression): linear baseline + tree families", () => {
+  const csv =
+    "id,created_at,x,price\n" +
+    Array.from({ length: 40 }, (_, i) => `R${i},2024-01-01,${i % 5},${(i * 13.7).toFixed(2)}`).join("\n");
+  const p = profileCsv(csv, { target: "price", datasetId: "houses" });
+  const cards = generatedHypothesisLibrary(p, {
+    taskType: "regression",
+    target: "price",
+    metric: "rmse",
+  });
+  assert.ok(cards.length >= 3, "regression proposes at least 3 cards");
+  assert.ok((cards[0].tags || []).includes("baseline"));
+  assert.equal(cards[0].model_family, "linear_regression", "regression baseline is linear");
+  const families = cards.map((c) => c.model_family);
+  assert.ok(families.includes("random_forest"));
+  assert.ok(families.includes("hist_gradient_boosting"));
+  // no classification-only calibration card in a regression proposal
+  assert.ok(!cards.some((c) => (c.tags || []).includes("calibration")));
+  for (const c of cards) assert.ok(/price/.test(c.statement));
+});
+
+test("generatedHypothesisLibrary respects an explicit banned column", () => {
+  const p = profileCsv(bigChurn(), { target: "churned", datasetId: "churn" });
+  // plan is a normally-safe feature; ban it explicitly and confirm it disappears.
+  const cards = generatedHypothesisLibrary(p, {
+    taskType: "binary_classification",
+    target: "churned",
+    metric: "recall",
+    bannedColumns: ["plan"],
+  });
+  for (const c of cards) assert.ok(!c.features.includes("plan"), "explicitly banned column excluded");
+});
+
+test("generatedHypothesisLibrary is deterministic", () => {
+  const p = profileCsv(bigChurn(), { target: "churned", datasetId: "churn" });
+  const opts = { taskType: "binary_classification", target: "churned", metric: "recall" };
+  assert.deepEqual(generatedHypothesisLibrary(p, opts), generatedHypothesisLibrary(p, opts));
 });
 
 // Profiling the bundled sla_tickets CSV must stay equivalent to the committed golden

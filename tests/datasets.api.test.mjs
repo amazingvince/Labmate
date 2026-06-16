@@ -227,6 +227,44 @@ test("study on an uploaded dataset profiles for real (not the sla_tickets profil
   assert.equal(mc.task_type, "binary_classification");
 });
 
+test("propose for an uploaded dataset generates baseline-first, task-appropriate cards (no leakage)", async (t) => {
+  if (!booted) return t.skip();
+  // ctx.studyId is the churn_demo study (uploaded CSV with a leakage column). Proposing
+  // with no explicit hypotheses must derive cards from the REAL profile, not sla_tickets.
+  const r = await post("/api/experiments/propose", { study_id: ctx.studyId, n: 6 });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  const hyps = r.json.hypotheses;
+  assert.ok(Array.isArray(hyps) && hyps.length >= 4, "at least 4 generated cards");
+
+  // 1) The FIRST card is the baseline (dummy + logistic/linear) using only safe features.
+  const first = hyps[0];
+  assert.ok(/baseline/i.test(first.statement), "first card is the baseline");
+  assert.equal(first.model_family, "logistic_regression", "classification baseline is logistic");
+  assert.ok(Array.isArray(first.features) && first.features.length > 0, "baseline names safe features");
+
+  // 2) NO card includes the banned/leakage column (account_closed_date, refund_issued).
+  for (const h of hyps) {
+    assert.ok(!h.features.includes("account_closed_date"), "no leakage column in any card");
+    assert.ok(!h.features.includes("refund_issued"), "no separator-leakage column in any card");
+    assert.ok(!h.features.includes("churned"), "the target is never a feature");
+    // every card references a real uploaded column, not sla_tickets-flavored features
+    assert.ok(h.features.includes("plan") || h.features.includes("monthly_spend"), "uses real columns");
+  }
+
+  // 3) The model families match the inferred task type (binary classification).
+  const families = new Set(hyps.map((h) => h.model_family));
+  assert.ok(families.has("logistic_regression"));
+  assert.ok(families.has("random_forest"));
+  assert.ok(families.has("hist_gradient_boosting"));
+  // sla_tickets-only families (e.g. lightgbm) must NOT leak into a generated proposal.
+  assert.ok(!families.has("lightgbm"), "no bundled-library-only family in a generated proposal");
+
+  // 4) NOT the sla_tickets cards: none should reference sla-specific columns.
+  for (const h of hyps) {
+    assert.ok(!/queue_depth_at_creation|breached_sla/.test(h.statement), "not an sla_tickets card");
+  }
+});
+
 test("GET /api/studies/{id} exposes the generated contracts on dataset_version", async (t) => {
   if (!booted) return t.skip();
   const r = await get(`/api/studies/${ctx.studyId}`);

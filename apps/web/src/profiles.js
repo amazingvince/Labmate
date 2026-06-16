@@ -432,6 +432,141 @@ function round4(x) {
 }
 
 /**
+ * Derive a deterministic, baseline-first, TASK-APPROPRIATE hypothesis library from a
+ * REAL resolved profile (profileCsv output for an uploaded dataset). Unlike
+ * `hypothesisLibrary` — which is hand-written for the bundled `sla_tickets` golden path
+ * and references sla-specific columns — this works for arbitrary tabular data:
+ *
+ *   - the first card is ALWAYS the baseline (dummy + logistic/linear) on the profile's
+ *     SAFE features, with a rationale that it sets the floor every later run must clear;
+ *   - then a small set of model-family cards keyed to the inferred task type
+ *     (classification ⇒ logistic_regression, random_forest, hist_gradient_boosting, plus
+ *     a threshold-calibration card; regression ⇒ linear, random_forest,
+ *     hist_gradient_boosting);
+ *   - every card uses ONLY safe features (leakage/banned columns are excluded by
+ *     construction — `safeFeatures` already omits them) and references the study's target
+ *     + primary metric.
+ *
+ * Deterministic: same profile + opts ⇒ identical cards (no clock, no randomness).
+ *
+ * @param {object} profile  resolved dataset profile (profileCsv output)
+ * @param {object} opts     { taskType, target, metric, bannedColumns? }
+ * @returns hypothesis cards in the same shape as `hypothesisLibrary`.
+ */
+export function generatedHypothesisLibrary(profile, opts = {}) {
+  const taskType = opts.taskType || "binary_classification";
+  const isRegression = taskType === "regression";
+  const target = opts.target || profile.target || "the target";
+  const metric = opts.metric || (isRegression ? "rmse" : "recall");
+
+  // SAFE features only: the profile's safe_features already excludes the target and every
+  // leakage candidate. Union any caller-declared banned columns out as a belt-and-braces
+  // guard so a generated card can NEVER name a banned/leaky column. Deterministic order.
+  const banned = new Set([...(opts.bannedColumns || []), ...(profile.leakage_candidates || [])]);
+  const safe = (profile.safe_features || []).filter((n) => n && n !== target && !banned.has(n));
+
+  // A short, human-readable feature blurb for rationales (first few, then "+N more").
+  const blurb = (() => {
+    if (!safe.length) return "the available safe features";
+    const head = safe.slice(0, 3).join(", ");
+    const extra = safe.length - 3;
+    return extra > 0 ? `${head} (+${extra} more)` : head;
+  })();
+
+  const cards = [];
+
+  if (isRegression) {
+    cards.push({
+      statement:
+        `A dummy + linear-regression baseline establishes the ${metric} floor on \`${target}\`; ` +
+        "no tuned model should be trusted until it beats this reference.",
+      rationale:
+        "Baselines first: a mean predictor plus a plain linear model is the cheapest honest " +
+        `reference and anchors every later comparison (features: ${blurb}).`,
+      model_family: "linear_regression",
+      features: safe,
+      expected_outcome: `A modest ${metric}; the number every other run must beat.`,
+      tags: ["baseline"],
+    });
+    cards.push({
+      statement:
+        `Random forests capture nonlinear feature interactions a linear baseline misses, ` +
+        `improving ${metric} on \`${target}\`.`,
+      rationale:
+        "Tabular targets are often interaction-heavy; trees model feature crosses without " +
+        "manual engineering.",
+      model_family: "random_forest",
+      features: safe,
+      expected_outcome: `${metric} improves over the linear baseline.`,
+      tags: [],
+    });
+    cards.push({
+      statement:
+        `Histogram gradient boosting fits residual structure the forest leaves behind, giving ` +
+        `the best ${metric} of the family on \`${target}\`.`,
+      rationale:
+        "Boosting usually edges out bagging on tabular regression; worth one capacity test " +
+        "against the baseline.",
+      model_family: "hist_gradient_boosting",
+      features: safe,
+      expected_outcome: `Best ${metric} of the linear/tree family.`,
+      tags: [],
+    });
+  } else {
+    cards.push({
+      statement:
+        `A dummy + logistic-regression baseline establishes the ${metric} floor on \`${target}\`; ` +
+        "no tuned model should be trusted until it clears this bar.",
+      rationale:
+        "Baselines first: a majority-class dummy plus a calibrated linear model is the cheapest " +
+        `honest reference and anchors every later comparison (features: ${blurb}).`,
+      model_family: "logistic_regression",
+      features: safe,
+      expected_outcome: `A modest ${metric}; the number every other run must beat.`,
+      tags: ["baseline"],
+    });
+    cards.push({
+      statement:
+        `Random forests capture nonlinear interactions a linear baseline misses, improving ` +
+        `${metric} on \`${target}\` at a fixed error budget.`,
+      rationale:
+        "Class boundaries are often interaction-heavy; trees model feature crosses without " +
+        "manual engineering.",
+      model_family: "random_forest",
+      features: safe,
+      expected_outcome: `${metric} lifts over baseline while guardrails hold.`,
+      tags: [],
+    });
+    cards.push({
+      statement:
+        `Histogram gradient boosting ranks risk better and produces better-calibrated ` +
+        `probabilities, raising ${metric} on \`${target}\` once the threshold is tuned on validation.`,
+      rationale:
+        "Boosting usually ranks better than bagging on tabular data; calibration matters when " +
+        "the metric is threshold-dependent.",
+      model_family: "hist_gradient_boosting",
+      features: safe,
+      expected_outcome: `Best ranking of the family; strongest ${metric}.`,
+      tags: [],
+    });
+    cards.push({
+      statement:
+        `Threshold calibration on the validation split lets us hit the ${metric} target while ` +
+        "respecting the guardrails, rather than accepting the default 0.5 cutoff.",
+      rationale:
+        "The decision threshold is the real lever for a threshold-dependent metric and must be " +
+        "chosen on validation, never test.",
+      model_family: "hist_gradient_boosting",
+      features: safe,
+      expected_outcome: `Same model, higher usable ${metric} after validation-tuned thresholding.`,
+      tags: ["calibration"],
+    });
+  }
+
+  return cards;
+}
+
+/**
  * A deterministic, hypothesis-driven experiment library (NOT a parameter sweep).
  * Each card is a falsifiable claim with a rationale, a model family, the safe
  * feature set it would use, and an expected outcome. The first card is always the
