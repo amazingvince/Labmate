@@ -29,8 +29,8 @@
 
 import rubric from "../../../docs/rubric.json";
 import schemaSQL from "../schema.sql";
-import { profileFor, profileCsv, hypothesisLibrary } from "./profiles.js";
-import { buildContracts } from "./contracts.js";
+import { profileFor, profileCsv, hypothesisLibrary, generatedHypothesisLibrary } from "./profiles.js";
+import { buildContracts, inferTaskType } from "./contracts.js";
 import { evaluateRubric } from "./grade.js";
 
 // ---------------------------------------------------------------------------
@@ -702,13 +702,19 @@ async function resolveProfile(env, study) {
       profile.target_definition = known.target_definition;
     }
     const fileHash = await sha256hex(csvText);
-    return { profile, fileHash };
+    // `source: "csv"` tells callers (proposeExperiments) this is a REAL uploaded dataset,
+    // so they can generate dataset-agnostic hypotheses instead of the bundled library.
+    return { profile, fileHash, source: "csv" };
   }
   const profile = profileFor(study.dataset_id, study.target);
   const fileHash = await sha256hex(
     JSON.stringify({ d: profile.dataset_id, n: profile.row_count, c: profile.columns, s: profile.split }),
   );
-  return { profile, fileHash };
+  // No uploaded CSV: either a bundled known-good profile (has profiled columns, e.g.
+  // sla_tickets) or the minimal generic fallback (no columns). Callers that need a real
+  // profile to generate hypotheses treat both as "not an uploaded dataset".
+  const source = (profile.columns || []).length ? "bundled" : "generic";
+  return { profile, fileHash, source };
 }
 
 async function profileDataset(env, body) {
@@ -791,13 +797,16 @@ async function proposeExperiments(env, body) {
   const studyRow = await getStudyRow(env, body.study_id);
   if (!studyRow) return notFound(`No study ${body.study_id}`);
   const study = mapStudy(studyRow);
-  const profile = profileFor(study.dataset_id, study.target);
+  // Resolve the REAL profile: an uploaded CSV (source "csv") or the bundled/generic
+  // profile. Hypothesis proposal must be derived from the ACTUAL dataset, not always
+  // the sla_tickets library.
+  const { profile, source } = await resolveProfile(env, study);
 
   // The agent reasons in hypotheses and the human approves them (the product
   // premise) — so when the caller supplies hypotheses, persist THOSE and return
-  // their ids. Fall back to the seeded library only when none are supplied (e.g. a
-  // bare {study_id}). Leaky features are NOT rejected here; the launch-time 422 is
-  // the enforcement point (and the planted-leakage self-correction moment).
+  // their ids. Fall back to a seeded/generated library only when none are supplied
+  // (e.g. a bare {study_id}). Leaky features are NOT rejected here; the launch-time
+  // 422 is the enforcement point (and the planted-leakage self-correction moment).
   let cards;
   if (Array.isArray(body.hypotheses) && body.hypotheses.length) {
     cards = body.hypotheses
@@ -813,7 +822,25 @@ async function proposeExperiments(env, body) {
     let n = parseInt(body.n ?? 6, 10);
     if (!Number.isFinite(n) || n < 1) n = 6;
     if (n > 12) n = 12;
-    cards = hypothesisLibrary(profile).slice(0, n);
+    if (source === "csv") {
+      // UPLOADED dataset: generate baseline-first, task-appropriate cards from the real
+      // profile + inferred task type. Respects the study's target + primary metric and
+      // uses only safe (non-leakage, non-banned) features.
+      const constraints = study.constraints || {};
+      const taskType = inferTaskType(study, profile);
+      const metric =
+        constraints.primary_metric || study.metric || (taskType === "regression" ? "rmse" : "recall");
+      cards = generatedHypothesisLibrary(profile, {
+        taskType,
+        target: study.target || profile.target,
+        metric,
+        bannedColumns: constraints.banned_columns || [],
+      }).slice(0, n);
+    } else {
+      // Bundled (sla_tickets) or generic / no uploaded CSV: keep the existing seeded
+      // library exactly (the golden path + its tests depend on these cards verbatim).
+      cards = hypothesisLibrary(profile).slice(0, n);
+    }
   }
   // C3 — dedupe by (study_id, statement): skip cards whose statement already exists
   // for this study (re-proposing the same card must not duplicate the hypothesis).
