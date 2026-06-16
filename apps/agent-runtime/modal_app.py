@@ -32,9 +32,13 @@ MODAL API USED (signatures confirmed against modal.com/docs, June 2026)
 * modal.Secret.from_name("labmate-agent-runtime")
       -> @app.function(secrets=[modal.Secret.from_name(...)]); secret keys are injected
          as environment variables. docs/guide/secrets
-* @app.function(image=..., secrets=..., timeout=..., min_containers=...)
+* @app.function(image=..., secrets=..., timeout=..., min_containers=..., max_containers=...)
       -> min_containers (int | None): "Minimum number of containers to keep warm, even
          when Function is idle." timeout default 300, raised here for multi-minute loops.
+      -> max_containers (int | None): "The maximum number of containers Modal will run
+         for this Function at once." Set to 1 here to pin the in-memory study registry
+         to a single process (see the SINGLE-CONTAINER CONSTRAINT note below). This is
+         the current (non-deprecated) cap; older code used concurrency_limit=N.
          docs/reference/modal.App
 * @modal.web_server(port, *, startup_timeout=5.0, label=None, custom_domains=None,
       requires_proxy_auth=False)
@@ -71,7 +75,9 @@ DEPLOY RUNBOOK
 
     (Optional extra keys the runtime understands: ANTHROPIC_MODEL, LABMATE_AUTO_APPROVE,
      MODAL_RUNNER_URL, LABMATE_MAX_TOOL_CALLS, LABMATE_MAX_SESSION_SECONDS,
-     MANAGED_AGENTS_OUTCOMES, LABMATE_SKILL_IDS.)
+     MANAGED_AGENTS_OUTCOMES, LABMATE_SKILL_IDS, LABMATE_APPROVAL_DELAY_MS,
+     LABMATE_DEFAULT_BUDGET_SECONDS, LABMATE_DEFAULT_MAX_TRIALS,
+     LABMATE_SESSION_GRACE_SECONDS.)
 
 (2) Deploy from the repo root (so the add_local_dir/add_local_file relative paths
     resolve against this file's directory):
@@ -134,6 +140,20 @@ app = modal.App("labmate-agent-runtime")
     secrets=[modal.Secret.from_name("labmate-agent-runtime")],
     # Keep one container warm so SSE streams (GET /agent/:id/stream) are never cold-started.
     min_containers=1,
+    # SINGLE-CONTAINER CONSTRAINT (load-bearing): the Node runtime keeps its study
+    # registry — the studies Map, the SSE subscriber sets, the event buffer + monotonic
+    # `id:` sequence, and the stream dedup — in PROCESS memory (src/server.mjs). That
+    # state is per-container. If Modal scaled to >1 container, a POST /agent/start could
+    # land on container A while the cockpit's GET /agent/:id/stream lands on container B,
+    # which would (a) see no active session and immediately emit session.ended, or
+    # (b) re-kick a duplicate loop. Pin to exactly one container so all of a study's
+    # traffic shares the same registry. min_containers=1 + max_containers=1 means
+    # exactly one warm, long-lived container; @modal.concurrent fans many SSE clients
+    # out within it.
+    #
+    # Out of scope for this pass: externalizing the registry to a Durable Object /
+    # Modal Dict so the runtime can scale horizontally. Until then this pin is required.
+    max_containers=1,
     # Multi-minute agent loops: a single session can run for up to maxSessionSeconds
     # (default 1800s). Give the web server container ample headroom beyond that.
     timeout=3600,

@@ -22,8 +22,40 @@ const BETA = config.managedAgentsBeta;
 let _client = null;
 export function client() {
   if (_client) return _client;
-  _client = new Anthropic({ apiKey: config.anthropicApiKey() });
+  // Explicit maxRetries + timeout: the SDK retries 408/409/429/5xx with backoff and
+  // honors Retry-After. Without these it defaults to 2 retries / no hard timeout; we
+  // set them so transient managed-agents flakiness self-heals and a wedged request
+  // can't hang the loop forever (per-request 60s; the loop also enforces a session cap).
+  _client = new Anthropic({
+    apiKey: config.anthropicApiKey(),
+    maxRetries: 4,
+    timeout: 60_000,
+  });
   return _client;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Run an idempotent SDK call with bounded backoff on TRANSPORT failures (thrown
+ * errors), on top of the SDK's own per-request retries. Sending a user message or a
+ * tool result is effectively idempotent for our loop (the worst case is a duplicate
+ * event the stream dedup already drops), so retrying is safe. Throws the last error
+ * if every attempt fails — callers decide whether to terminate the session.
+ */
+async function withBackoff(fn, { attempts = 3, baseMs = 400, label = "anthropic" } = {}) {
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) await sleep(baseMs * 2 ** i);
+    }
+  }
+  const e = new Error(`${label} failed after ${attempts} attempts: ${lastErr?.message ?? lastErr}`);
+  e.cause = lastErr;
+  throw e;
 }
 
 /* ---------- agents ---------- */
@@ -75,9 +107,13 @@ export async function getSession(sessionId) {
 
 /* ---------- events ---------- */
 
-/** Send one or more events into a session (e.g. a user message or a tool result). */
+/** Send one or more events into a session (e.g. a user message or a tool result).
+ *  Wrapped in transport backoff: a dropped send must not strand the session. */
 export async function sendEvents(sessionId, events) {
-  return client().beta.sessions.events.send(sessionId, { events, betas: [BETA] });
+  return withBackoff(
+    () => client().beta.sessions.events.send(sessionId, { events, betas: [BETA] }),
+    { label: "sessions.events.send" },
+  );
 }
 
 /** Convenience: a plain user text message. */
@@ -111,26 +147,47 @@ export async function sendToolResult(sessionId, customToolUseId, content, isErro
  * tail the live stream deduped by event id. Falls back to polling if stream() is
  * unavailable in the pinned SDK build.
  */
-export async function* streamEvents(sessionId) {
+export async function* streamEvents(sessionId, { reconnectAttempts = 4, reconnectBaseMs = 500 } = {}) {
   const c = client();
   if (c.beta.sessions.events.stream) {
-    const stream = await c.beta.sessions.events.stream(sessionId, { betas: [BETA] });
+    // `seen` persists ACROSS reconnects so a re-established stream that re-replays
+    // history (or re-delivers a frame) is deduped — the loop never double-dispatches.
     const seen = new Set();
-    try {
-      // events.list auto-paginates on iteration; history first, oldest→newest.
-      for await (const past of c.beta.sessions.events.list(sessionId, { betas: [BETA] })) {
-        if (past?.id) seen.add(past.id);
-        yield past;
+    let failures = 0;
+    for (;;) {
+      try {
+        const stream = await c.beta.sessions.events.stream(sessionId, { betas: [BETA] });
+        try {
+          // events.list auto-paginates on iteration; history first, oldest→newest.
+          for await (const past of c.beta.sessions.events.list(sessionId, { betas: [BETA] })) {
+            if (past?.id && seen.has(past.id)) continue;
+            if (past?.id) seen.add(past.id);
+            yield past;
+          }
+        } catch {
+          /* history replay is best-effort — tail the live stream regardless */
+        }
+        for await (const event of stream) {
+          if (event?.id && seen.has(event.id)) continue;
+          if (event?.id) seen.add(event.id);
+          yield event;
+        }
+        // Clean end of stream: the SDK closed it without an error. The loop decides
+        // (via its terminal-frame logic) whether that's a real done or a silent drop.
+        return;
+      } catch (err) {
+        // Transport drop mid-stream. Reconnect with backoff up to a budget; the dedup
+        // set above prevents re-yielding anything already seen on the new connection.
+        failures += 1;
+        if (failures > reconnectAttempts) {
+          const e = new Error(`stream reconnect budget exhausted: ${err?.message ?? err}`);
+          e.cause = err;
+          e.code = "stream_reconnect_exhausted";
+          throw e;
+        }
+        await sleep(reconnectBaseMs * 2 ** (failures - 1));
       }
-    } catch {
-      /* history replay is best-effort — tail the live stream regardless */
     }
-    for await (const event of stream) {
-      if (event?.id && seen.has(event.id)) continue;
-      if (event?.id) seen.add(event.id);
-      yield event;
-    }
-    return;
   }
   // Fallback: naive polling (use only if stream() isn't in this SDK build).
   let after;
@@ -143,6 +200,6 @@ export async function* streamEvents(sessionId) {
       after = e.id ?? after;
       yield e;
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    await sleep(1000);
   }
 }

@@ -60,6 +60,19 @@ export const config = {
     read("LABMATE_MAX_TOOL_CALLS", { fallback: "60" }),
   ),
   maxSessionSeconds: Number(read("LABMATE_MAX_SESSION_SECONDS", { fallback: "1800" })),
+
+  // Fallback per-study compute budget used by the auto-approve gate ONLY when the
+  // control plane does not return a study.budget (e.g. a study created before the
+  // budget column existed). The real per-study budget from GET /api/studies/:id
+  // always takes precedence. These mirror the Worker's defaults (worker.js
+  // createStudy: max_trials 20, budget_seconds 600).
+  defaultBudgetSeconds: Number(read("LABMATE_DEFAULT_BUDGET_SECONDS", { fallback: "600" })),
+  defaultMaxTrials: Number(read("LABMATE_DEFAULT_MAX_TRIALS", { fallback: "20" })),
+
+  // How long, after a session's loop terminates, the in-memory registry entry (its
+  // event buffer + last id) is kept so late reconnects can replay the tail before it
+  // is GC'd. Keep modest — the ledger in the control plane is the durable record.
+  sessionGraceSeconds: Number(read("LABMATE_SESSION_GRACE_SECONDS", { fallback: "120" })),
 };
 
 /** Validate everything the runtime needs to actually run (not just bootstrap). */
