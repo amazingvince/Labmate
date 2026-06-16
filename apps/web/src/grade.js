@@ -25,7 +25,6 @@ export function evaluateRubric(rubric, L) {
   const decisions = L.decisions || [];
   const feedback = L.feedback || [];
   const artifacts = L.artifacts || [];
-  const manifests = L.manifests || [];
   const dv = L.dataset_version || null;
   const study = L.study || {};
 
@@ -155,10 +154,27 @@ export function evaluateRubric(rubric, L) {
       return [runs.length > 0 && bad.length === 0, `${runs.length - bad.length}/${runs.length} runs carry rationale`];
     },
     feedback_affected_plan: () => {
-      // C11 — a human feedback constraint shaped the plan if EITHER a manifest or a run
-      // carries an applied_feedback_id (runs persist it directly now).
-      const ok = manifests.some((m) => m.applied_feedback_id) || runs.some((r) => r.applied_feedback_id);
-      return [ok, ok ? "a run/manifest applied a human feedback constraint" : "no run or manifest references a feedback id"];
+      // GENUINE causal link required: a feedback that ACTUALLY changed the study's
+      // enforced contract (constraints_changed marker), AND a run created on/after it
+      // whose applied_feedback_id points back to it. This FAILS when feedback existed
+      // but changed nothing, or when no later run references the change — so a
+      // merely-stored note can no longer game the check.
+      const changedFb = feedback.filter(
+        (f) => f.parsed_constraints && f.parsed_constraints.constraints_changed === true,
+      );
+      if (!changedFb.length) return [false, "no feedback changed the study's enforced constraints"];
+      for (const f of changedFb) {
+        const later = runs.some(
+          (r) => r.applied_feedback_id === f.id && (r.created_at || "") >= (f.created_at || ""),
+        );
+        if (later) {
+          const what = Array.isArray(f.parsed_constraints.changed)
+            ? f.parsed_constraints.changed.join("; ")
+            : "the enforced constraints";
+          return [true, `feedback ${f.id} changed the contract (${what}) and a later run applied it`];
+        }
+      }
+      return [false, `${changedFb.length} feedback changed constraints but no later run references it`];
     },
     runs_queryable: () => [true, "query_runs supports metric, model_family, hypothesis, tags, and critique filters"],
 

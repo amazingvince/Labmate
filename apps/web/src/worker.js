@@ -911,18 +911,178 @@ async function requestApproval(env, body) {
   return json({ approval_id: id, status: "pending" });
 }
 
+/** A free-text "stop using X" only mutates the contract when X is a plausible column
+ *  name (a single snake_case / identifier token), never an arbitrary English word.
+ *  Returns the normalized (lowercased, trimmed) column token, or false. */
+function looksLikeColumn(tok) {
+  if (typeof tok !== "string") return false;
+  const t = tok.trim().replace(/[.,;:"'`)]+$/, "").replace(/^["'`(]+/, "");
+  return /^[a-z][a-z0-9_]{1,39}$/i.test(t) ? t.toLowerCase() : false;
+}
+
 /** Lightweight natural-language -> constraint parse for free-text notes. Parses for
- *  both "note" and "human_feedback" types (the cockpit and MCP use the latter). */
+ *  both "note" and "human_feedback" types (the cockpit and MCP use the latter).
+ *
+ *  Returns a parsed-constraints object whose keys signal UNAMBIGUOUS intent:
+ *  - primary_metric: an explicit "<metric> matters more / prioritize <metric>" statement
+ *  - guardrail:      an explicit false-positive-rate bound (percent OR decimal)
+ *  - banned_columns: explicit "stop using / don't use / ban / drop <column>" intents
+ *  Vague encouragement ("looks good, keep going") yields undefined → no contract change. */
 function parseConstraints(content, type) {
   if (type !== "note" && type !== "human_feedback") return undefined;
   const t = (content || "").toLowerCase();
   const c = {};
-  if (/recall/.test(t) && /(precision|matters|priorit|over)/.test(t)) c.primary_metric = "recall";
-  if (/(false positive|fpr|false alarm)/.test(t)) {
-    const pct = t.match(/(\d{1,3})\s*%/);
-    if (pct) c.guardrail = `false_positive_rate <= ${(parseInt(pct[1], 10) / 100).toFixed(2)}`;
+
+  // ---- primary metric (explicit "<metric> matters more / prioritize <metric>") ----
+  const metricToken = (s) => {
+    if (/\brecall\b/.test(s)) return "recall";
+    if (/\bprecision\b/.test(s)) return "precision";
+    if (/\b(roc[ _-]?auc|auc[ _-]?roc)\b/.test(s)) return "roc_auc";
+    if (/\b(pr[ _-]?auc|auc[ _-]?pr|average precision)\b/.test(s)) return "pr_auc";
+    if (/\brmse\b/.test(s)) return "rmse";
+    if (/\bmae\b/.test(s)) return "mae";
+    if (/\br2\b|r\^2|r-squared/.test(s)) return "r2";
+    return null;
+  };
+  // "<X> matters more than <Y>" / "<X> over <Y>" / "prioritize <X> over <Y>": the
+  // SUBJECT (the side before "more than/over/rather than/instead of") is the choice.
+  const versus = t.split(/\bmore important than\b|\bmatters? more than\b|\bover\b|\brather than\b|\binstead of\b/);
+  if (versus.length >= 2) {
+    const subj = metricToken(versus[0]);
+    if (subj) c.primary_metric = subj;
   }
+  if (!c.primary_metric) {
+    const priorityCtx = /(matter|priorit|focus on|optimi[sz]e for|care (?:more )?about|more important)/;
+    if (priorityCtx.test(t)) {
+      const tok = metricToken(t);
+      if (tok) c.primary_metric = tok;
+    }
+  }
+
+  // ---- false-positive-rate guardrail (percent OR decimal) ----
+  if (/(false[ _-]?positive|fpr|false[ _-]?alarm)/.test(t)) {
+    let bound = null;
+    const pct = t.match(/(\d{1,3}(?:\.\d+)?)\s*%/);
+    if (pct) {
+      const v = parseFloat(pct[1]) / 100;
+      if (Number.isFinite(v) && v >= 0 && v <= 1) bound = v;
+    } else {
+      // decimal form: "fpr <= 0.10", "false positive rate 0.1", "fpr under 0.05"
+      const dec = t.match(/(?:false[ _-]?positive[ _-]?rate|fpr)[^0-9]{0,24}(0?\.\d+)/);
+      if (dec) {
+        const v = parseFloat(dec[1]);
+        if (Number.isFinite(v) && v >= 0 && v <= 1) bound = v;
+      }
+    }
+    if (bound !== null) c.guardrail = `false_positive_rate <= ${bound.toFixed(2)}`;
+  }
+
+  // ---- ban intent → banned columns ("stop using X", "don't use X", "ban X", ...) ----
+  const banned = [];
+  const banRe =
+    /(?:stop using|don'?t use|do not use|\bban\b|drop(?: the)?(?: feature| column)?|remove(?: the)?(?: feature| column)?|exclude|no longer use)\s+([a-z][a-z0-9_]{1,39})/gi;
+  let m;
+  while ((m = banRe.exec(t)) !== null) {
+    const col = looksLikeColumn(m[1]);
+    if (col && !banned.includes(col)) banned.push(col);
+  }
+  if (banned.length) c.banned_columns = banned;
+
   return Object.keys(c).length ? c : undefined;
+}
+
+/**
+ * The causal core: MERGE a feedback's unambiguous constraint intent into the study's
+ * enforced contract (`study.constraints`). dispatch.mjs and BOTH launch paths read
+ * `study.constraints` on every launch (FPR `max_fpr`, `primary_metric`, banned columns
+ * flow study→runner and the runner enforces the FPR bound), so a merge here makes
+ * mid-run feedback causal for every SUBSEQUENT experiment — no agent re-read required.
+ *
+ * Additive + idempotent: never drops existing fields; only sets/replaces the specific
+ * keys the human stated. Returns { changed, summary[] } describing what (if anything)
+ * actually changed, so the caller can persist the linkage and report it. A merge that
+ * produces no net change returns changed=false (so a restatement of the current
+ * contract is honestly reported as a no-op).
+ *
+ * @param body         the inbound feedback ({ type, target_id, ... })
+ * @param parsed       parsed_constraints (explicit or from parseConstraints)
+ */
+function mergeStudyConstraints(current, body, parsed) {
+  const next = JSON.parse(JSON.stringify(current || {}));
+  const summary = [];
+
+  // (a) primary_metric — an explicit metric preference. Keep study.metric coherent is
+  //     handled by the caller; here we set the constraint the launch path reads.
+  const metricIntent =
+    (parsed && parsed.primary_metric) ||
+    (body.type === "change_metric" && typeof body.target_id === "string" ? body.target_id : null);
+  if (metricIntent && next.primary_metric !== metricIntent) {
+    next.primary_metric = metricIntent;
+    summary.push(`primary_metric → ${metricIntent}`);
+  }
+
+  // (b) FPR guardrail — replace the matching-metric (false_positive_rate) guardrail with
+  //     the human's bound; keep every OTHER guardrail untouched.
+  if (parsed && typeof parsed.guardrail === "string") {
+    const m = parsed.guardrail.match(/false[_\s]?positive[_\s]?rate\s*<=?\s*([0-9]*\.?[0-9]+)/i);
+    if (m) {
+      const bound = parseFloat(m[1]);
+      const before = studyFprBound(next);
+      if (Number.isFinite(bound) && before !== bound) {
+        // Drop any existing FPR guardrail (string or {expr}) then add the new one.
+        const others = [];
+        const g = next.guardrails;
+        const isFpr = (s) => typeof s === "string" && /false[_\s]?positive[_\s]?rate/i.test(s);
+        if (Array.isArray(g)) {
+          for (const item of g) {
+            if (typeof item === "string") {
+              if (!isFpr(item)) others.push(item);
+            } else if (item && typeof item === "object" && typeof item.expr === "string") {
+              if (!isFpr(item.expr)) others.push(item);
+            } else {
+              others.push(item);
+            }
+          }
+        } else if (typeof g === "string" && !isFpr(g)) {
+          others.push(g);
+        }
+        others.push({ expr: `false_positive_rate <= ${bound}` });
+        next.guardrails = others;
+        // A bare structured `guardrail` field, if present, is the FPR one — refresh it.
+        if (typeof next.guardrail === "string" && isFpr(next.guardrail)) {
+          next.guardrail = `false_positive_rate <= ${bound}`;
+        }
+        summary.push(`false_positive_rate <= ${bound}${before !== null ? ` (was ${before})` : ""}`);
+      }
+    }
+  }
+
+  // (c) banned columns — ban_feature (target_id) OR parsed banned_columns. Append + dedupe.
+  const bans = [];
+  if (body.type === "ban_feature" && typeof body.target_id === "string" && looksLikeColumn(body.target_id)) {
+    bans.push(body.target_id.toLowerCase());
+  }
+  if (parsed && Array.isArray(parsed.banned_columns)) {
+    for (const col of parsed.banned_columns) if (looksLikeColumn(col)) bans.push(col.toLowerCase());
+  }
+  if (bans.length) {
+    const have = new Set((next.banned_columns || []).map((c) => String(c).toLowerCase()));
+    const added = [];
+    const list = next.banned_columns ? [...next.banned_columns] : [];
+    for (const col of bans) {
+      if (!have.has(col)) {
+        have.add(col);
+        list.push(col);
+        added.push(col);
+      }
+    }
+    if (added.length) {
+      next.banned_columns = list;
+      summary.push(`banned_columns += [${added.join(", ")}]`);
+    }
+  }
+
+  return { next, changed: summary.length > 0, summary };
 }
 
 async function recordFeedback(env, body) {
@@ -939,6 +1099,39 @@ async function recordFeedback(env, body) {
       .bind(body.target_id, body.study_id)
       .run();
   }
+
+  // CAUSAL MERGE — when the parse carries UNAMBIGUOUS constraint intent, fold it into the
+  // study's enforced contract so every SUBSEQUENT launch reads (and the runner enforces)
+  // the human's bound/metric/bans. Conservative: an approval/vague note changes nothing.
+  let constraintsChanged = false;
+  let changeSummary = [];
+  const studyRow = await getStudyRow(env, body.study_id);
+  if (studyRow && body.type !== "approval") {
+    const currentConstraints = parse(studyRow.constraints_json) || {};
+    const { next, changed, summary } = mergeStudyConstraints(currentConstraints, body, parsed);
+    if (changed) {
+      // Keep study.metric coherent with an explicit primary_metric change (the launch
+      // path falls back to study.metric, and the report/grader read study.metric).
+      const newMetric =
+        next.primary_metric && next.primary_metric !== currentConstraints.primary_metric
+          ? next.primary_metric
+          : studyRow.metric;
+      await env.DB.prepare("UPDATE study SET constraints_json = ?, metric = ? WHERE id = ?")
+        .bind(JSON.stringify(next), newMetric, body.study_id)
+        .run();
+      constraintsChanged = true;
+      changeSummary = summary;
+    }
+  }
+
+  // Stamp the change marker INSIDE parsed_constraints_json (the feedback table has no
+  // dedicated column). This is what resolveAppliedFeedbackId + grade.js read to find the
+  // feedback that GENUINELY changed the contract — not merely any parsed feedback.
+  const storedParsed =
+    parsed || constraintsChanged
+      ? { ...(parsed || {}), ...(constraintsChanged ? { constraints_changed: true, changed: changeSummary } : {}) }
+      : null;
+
   await env.DB.prepare(
     `INSERT INTO feedback (id, study_id, target_id, type, scope, content, parsed_constraints_json, created_at)
      VALUES (?,?,?,?,?,?,?,?)`,
@@ -950,7 +1143,7 @@ async function recordFeedback(env, body) {
       body.type,
       body.scope ?? null,
       body.content,
-      parsed ? JSON.stringify(parsed) : null,
+      storedParsed ? JSON.stringify(storedParsed) : null,
       created,
     )
     .run();
@@ -964,6 +1157,8 @@ async function recordFeedback(env, body) {
       scope: body.scope,
       content: body.content,
       parsed_constraints: parsed,
+      constraints_changed: constraintsChanged,
+      constraints_change_summary: constraintsChanged ? changeSummary : undefined,
       created_at: created,
     }),
     201,
@@ -1067,10 +1262,16 @@ async function recordDecision(env, body) {
 function studyFprBound(constraints) {
   if (!constraints || typeof constraints !== "object") return null;
   const candidates = [];
+  const push = (item) => {
+    // Accept plain strings AND { expr: "..." } guardrail objects (the shape the cockpit
+    // and createStudy persist, and the shape a merged FPR feedback now writes).
+    if (typeof item === "string") candidates.push(item);
+    else if (item && typeof item === "object" && typeof item.expr === "string") candidates.push(item.expr);
+  };
   const g = constraints.guardrails;
-  if (Array.isArray(g)) candidates.push(...g);
-  else if (typeof g === "string") candidates.push(g);
-  if (typeof constraints.guardrail === "string") candidates.push(constraints.guardrail);
+  if (Array.isArray(g)) g.forEach(push);
+  else push(g);
+  push(constraints.guardrail);
   let bound = null;
   for (const c of candidates) {
     if (typeof c !== "string") continue;
@@ -1092,12 +1293,24 @@ function manifestMaxFpr(manifest) {
 
 /**
  * C11 — resolve the feedback id this run applied. Prefer an explicit value on the
- * payload; else auto-attach the most-recent feedback row that produced
- * parsed_constraints (the human guidance that actually shaped the plan). Returns a
- * feedback id string or null.
+ * payload; else auto-attach the most-recent feedback that ACTUALLY changed the study's
+ * enforced contract (constraints_changed marker in parsed_constraints_json). This is a
+ * real causal link: the run is launched against the mutated `study.constraints`, so it
+ * points at the feedback that produced them — not merely any feedback that parsed.
+ * Returns a feedback id string or null.
  */
 async function resolveAppliedFeedbackId(env, studyId, explicit) {
   if (explicit) return explicit;
+  // Prefer feedback that mutated the contract (the genuine cause of this run's bounds).
+  const changed = await env.DB.prepare(
+    `SELECT id FROM feedback
+       WHERE study_id = ? AND parsed_constraints_json LIKE '%"constraints_changed":true%'
+       ORDER BY created_at DESC LIMIT 1`,
+  )
+    .bind(studyId)
+    .first();
+  if (changed) return changed.id;
+  // Fallback: most-recent parsed-constraint feedback (back-compat; not a contract change).
   const row = await env.DB.prepare(
     `SELECT id FROM feedback
        WHERE study_id = ? AND parsed_constraints_json IS NOT NULL AND parsed_constraints_json <> ''
@@ -1181,6 +1394,15 @@ async function launchExperiment(env, body) {
   const leakedInFeatures = (manifest.features || []).filter((c) => profileLeak.includes(c));
   if (leakedInFeatures.length) {
     return fail(422, "invalid_manifest", `leakage columns present in features: ${leakedInFeatures.sort().join(", ")}`);
+  }
+
+  // Enforce the study's CURRENT banned_columns — including any a human banned via
+  // feedback ("stop using region"). validateManifest() only sees dataset-version bans;
+  // this catches bans that live on study.constraints (the causally-mutated contract).
+  const studyBanned = (study.constraints && study.constraints.banned_columns) || [];
+  const bannedInFeatures = (manifest.features || []).filter((c) => studyBanned.includes(c));
+  if (bannedInFeatures.length) {
+    return fail(422, "invalid_manifest", `banned columns present in features: ${[...new Set(bannedInFeatures)].sort().join(", ")}`);
   }
 
   // C5 — FPR guardrail. If the manifest declares metric.max_fpr that EXCEEDS the
