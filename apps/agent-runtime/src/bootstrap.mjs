@@ -130,6 +130,31 @@ async function main() {
     .filter(Boolean)
     .map((skill_id) => ({ type: "custom", skill_id, version: "latest" }));
 
+  // ENV PREREQUISITES — these must be set in .env BEFORE bootstrap (the agent is
+  // permanent/archive-only, so re-baking means `--update` or a fresh `--force`):
+  //   * LABMATE_SKILL_IDS  — comma-separated skill_* ids from `npm run skills:upload`.
+  //                          Absent → the agent attaches ZERO skills (the inline
+  //                          DS_SYSTEM_PROMPT still carries the core methodology, but
+  //                          the richer skill bodies won't be available). We WARN so
+  //                          this isn't a silent omission.
+  //   * MODAL_RUNNER_URL   — only needed if you wire the optional direct-to-Modal
+  //                          launch path; the default path launches through the control
+  //                          plane (POST /api/experiments/launch), so it's optional.
+  if (skills.length === 0) {
+    console.warn(
+      "WARNING: LABMATE_SKILL_IDS is empty — attaching ZERO custom skills.\n" +
+        "  The agent relies on the inline DS_SYSTEM_PROMPT only. To attach the four\n" +
+        "  Labmate DS skills, run `npm run skills:upload`, paste the printed\n" +
+        "  LABMATE_SKILL_IDS=... into .env, then re-run bootstrap with --update (or --force).",
+    );
+  }
+  if (!process.env.MODAL_RUNNER_URL) {
+    console.info(
+      "Note: MODAL_RUNNER_URL is unset — experiment launches go through the control " +
+        "plane (POST /api/experiments/launch). Set it only for the optional direct-to-Modal path.",
+    );
+  }
+
   const agentBody = {
     name: "Labmate DS",
     model: config.model, // claude-opus-4-8

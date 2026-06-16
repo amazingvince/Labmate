@@ -68,7 +68,19 @@ export const LABMATE_TOOLS = [
         study_id: { type: "string" },
         experiment_ids: { type: "array", items: { type: "string" } },
         reason: { type: "string" },
-        estimated_cost_seconds: { type: "integer" },
+        estimated_cost_seconds: {
+          type: "integer",
+          description:
+            "Estimated compute seconds this batch will consume. Used by the budget gate: " +
+            "the request auto-approves only if it (plus already-approved cost) stays within " +
+            "the study's budget_seconds; otherwise it stays pending for a human in the cockpit.",
+        },
+        trial_count: {
+          type: "integer",
+          description:
+            "How many experiment launches this approval covers (default 1). Counts against " +
+            "the study's max_trials budget for auto-approval.",
+        },
       },
       required: ["study_id", "reason"],
     },
@@ -122,6 +134,31 @@ export const LABMATE_TOOLS = [
             },
             tune_on: { type: "string", default: "validation" },
             tags: { type: "array", items: { type: "string" } },
+            metric: {
+              type: "object",
+              description:
+                "The objective + guardrail the runner enforces, derived from the study's " +
+                "metric contract. The runtime auto-fills primary_metric and max_fpr from " +
+                "the study's constraints.guardrails (false_positive_rate <= X) before launch, " +
+                "so you normally leave this out; set it only to override.",
+              properties: {
+                primary_metric: { type: "string", description: "e.g. recall" },
+                max_fpr: {
+                  type: "number",
+                  description:
+                    "Guardrail: max acceptable false_positive_rate (0..1). The threshold " +
+                    "is calibrated on validation to satisfy this; the runner enforces it.",
+                },
+              },
+            },
+            applied_feedback_id: {
+              type: "string",
+              description:
+                "OPTIONAL. The id of the human feedback (record_human_feedback) whose parsed " +
+                "constraints shaped THIS manifest — e.g. the feedback that set the recall/FPR " +
+                "guardrail or banned a column. Set it so the run records which guidance it " +
+                "applied (the ledger links the manifest to the feedback that changed the plan).",
+            },
           },
           required: ["study_id", "hypothesis_id", "script", "features", "split"],
         },
