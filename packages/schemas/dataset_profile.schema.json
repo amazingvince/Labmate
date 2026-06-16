@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://labmate.dev/schemas/dataset_profile.schema.json",
+  "title": "Dataset profile + catalog entities",
+  "description": "Shapes for POST /api/datasets. `dataset_profile` is the real profileCsv() output (apps/web/src/profiles.js) returned as the upload response's `profile`; `dataset` is a row of the uploaded-dataset catalog (apps/web/schema.sql). Distinct from the per-study dataset_version contract in study.schema.json.",
+  "type": "object",
+  "$defs": {
+    "profile_column": {
+      "type": "object",
+      "description": "One profiled column (a row of dataset_profile.columns). Carries the additive real-profiling fields the cockpit renders.",
+      "required": ["name", "dtype", "missing_fraction", "missing_pct", "cardinality", "n_unique", "example_values", "is_candidate_leakage"],
+      "properties": {
+        "name": { "type": "string" },
+        "dtype": { "type": "string", "enum": ["numeric", "categorical", "datetime", "boolean", "text"], "description": "Inferred over the non-blank sample." },
+        "missing_fraction": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of rows missing this column, rounded to 4 dp." },
+        "missing_pct": { "type": "number", "description": "missing_fraction * 100, pre-rounded by the Worker." },
+        "cardinality": { "type": "integer", "description": "Distinct non-blank values in the sample." },
+        "n_unique": { "type": "integer", "description": "Same as cardinality (kept for parity with the dataset_version column shape)." },
+        "example_values": { "type": "array", "items": { "type": "string" }, "description": "Up to 5 distinct example values." },
+        "is_candidate_leakage": { "type": "boolean", "default": false, "description": "Flagged by name pattern OR near-perfect target separation." },
+        "leakage_reason": { "type": "string", "description": "Present only when is_candidate_leakage is true." }
+      }
+    },
+    "profile_split": {
+      "type": "object",
+      "description": "The suggested split profileCsv attaches. Unlike the dataset_version split, this allows the `random` fallback used when no usable creation-time column exists.",
+      "required": ["strategy", "ratios", "seed"],
+      "properties": {
+        "strategy": { "type": "string", "enum": ["time_based", "random"] },
+        "time_col": { "type": "string", "description": "Present only for a time_based split." },
+        "ratios": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "[train, validation, test]" },
+        "seed": { "type": "integer", "default": 42 }
+      }
+    },
+    "dataset_profile": {
+      "type": "object",
+      "description": "The `profile` object returned by POST /api/datasets (the profileCsv output). A superset of the persisted dataset_version contract plus additive fields (categorical_features, datetime_columns, sampled, per-column example_values).",
+      "required": ["dataset_id", "row_count", "target", "leakage_candidates", "safe_features", "split", "columns"],
+      "properties": {
+        "dataset_id": { "type": "string" },
+        "row_count": { "type": "integer", "description": "Rows observed in the (possibly sampled) CSV." },
+        "target": { "type": ["string", "null"], "description": "The target column name, or null when none was supplied." },
+        "target_definition": { "type": ["string", "null"], "description": "A human-authored definition; null for a fresh upload." },
+        "leakage_candidates": { "type": "array", "items": { "type": "string" } },
+        "safe_features": { "type": "array", "items": { "type": "string" } },
+        "categorical_features": { "type": "array", "items": { "type": "string" }, "description": "Suggested categoricals (categorical + boolean columns). Omitted on an empty CSV." },
+        "datetime_columns": { "type": "array", "items": { "type": "string" }, "description": "Detected datetime columns. Omitted on an empty CSV." },
+        "split": { "$ref": "#/$defs/profile_split" },
+        "columns": { "type": "array", "items": { "$ref": "#/$defs/profile_column" } },
+        "sampled": { "type": "boolean", "description": "True when the CSV was truncated to the profiling row cap (5000)." }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "description": "A row of the `dataset` catalog (apps/web/schema.sql) — an UPLOADED dataset, distinct from the per-study dataset_version. Records the CSV's content hash and the cached profileCsv result so a study can attach to it by dataset_id.",
+      "required": ["id", "created_at"],
+      "properties": {
+        "id": { "type": "string", "description": "dataset_<ulid> or a caller-supplied, sanitized id." },
+        "source": { "type": "string", "enum": ["uploaded", "bundled"] },
+        "content_hash": { "type": "string", "description": "sha256 of the raw CSV bytes." },
+        "row_count": { "type": "integer", "description": "Rows observed (sampled, capped)." },
+        "target": { "type": ["string", "null"], "description": "Optional target hint used for leakage scoring." },
+        "profile": { "$ref": "#/$defs/dataset_profile", "description": "The cached profileCsv() result (stored as profile_json in D1)." },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

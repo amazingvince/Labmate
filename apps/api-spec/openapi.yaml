@@ -230,6 +230,77 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/datasets:
+    post:
+      tags: [studies]
+      operationId: uploadDataset
+      summary: Upload + profile a dataset CSV (upload_dataset)
+      description: >
+        Token-gated write. Accepts a raw `text/csv` body (with optional
+        `?dataset_id=` and `?target=` query params) OR a JSON body
+        `{ dataset_id?, csv, target? }`. Stores the CSV in R2 at
+        `datasets/{dataset_id}.csv`, upserts a row in the `dataset` catalog
+        (content hash, row count, cached profile), and returns
+        `{ dataset_id, profile }` where `profile` is the REAL profiling result
+        produced by `profileCsv` (per-column dtype, missingness, cardinality,
+        example values, leakage flags, a suggested split, and suggested
+        categoricals/datetime columns). Idempotent on a given `dataset_id`
+        (re-upload overwrites the R2 object and updates the catalog row). The
+        `target` is optional — name-pattern leakage detection always runs;
+        supplying it additionally enables the near-perfect-separation heuristic.
+      security:
+        - internalToken: []
+      parameters:
+        - name: dataset_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            Optional R2-safe id for the dataset (sanitized server-side to
+            `[A-Za-z0-9._-]`). The server assigns `dataset_<ulid>` when omitted.
+            A `dataset_id` in the JSON body takes precedence over this query param.
+        - name: target
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            Optional target column name, used to drive the leakage-by-separation
+            heuristic. The JSON body's `target` overrides this when present.
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema:
+              type: string
+              description: The raw CSV text (header row + data rows).
+          application/json:
+            schema:
+              type: object
+              required: [csv]
+              properties:
+                csv:
+                  type: string
+                  description: The raw CSV text (header row + data rows).
+                dataset_id:
+                  type: string
+                  description: Optional R2-safe id; the server assigns one when omitted.
+                target:
+                  type: string
+                  description: Optional target column for separation-based leakage scoring.
+      responses:
+        "201":
+          description: Dataset stored and profiled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dataset_id, profile]
+                properties:
+                  dataset_id: { type: string }
+                  profile: { $ref: "#/components/schemas/DatasetProfile" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/experiments/propose:
     post:
       tags: [experiments]
@@ -736,6 +807,140 @@ components:
           type: string
           description: Where the runner pulls the CSV; the agent echoes it onto launch manifests.
         created_at: { type: string, format: date-time }
+
+    ProfileColumn:
+      type: object
+      description: >
+        One profiled column from `profileCsv` (apps/web/src/profiles.js) — a row of
+        `DatasetProfile.columns`. Distinct from `ColumnProfile` (the persisted
+        dataset_version column shape): this carries the additive real-profiling fields
+        the cockpit renders (missing_pct, cardinality, example_values).
+      required: [name, dtype, missing_fraction, missing_pct, cardinality, n_unique, example_values, is_candidate_leakage]
+      properties:
+        name: { type: string }
+        dtype:
+          type: string
+          enum: [numeric, categorical, datetime, boolean, text]
+          description: Inferred over the non-blank sample.
+        missing_fraction:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Fraction of rows missing this column, rounded to 4 dp.
+        missing_pct:
+          type: number
+          description: "missing_fraction * 100, pre-rounded by the Worker."
+        cardinality:
+          type: integer
+          description: Distinct non-blank values in the sample.
+        n_unique:
+          type: integer
+          description: Same as `cardinality` (kept for parity with ColumnProfile).
+        example_values:
+          type: array
+          items: { type: string }
+          description: Up to 5 distinct example values.
+        is_candidate_leakage:
+          type: boolean
+          default: false
+          description: Flagged by name pattern OR near-perfect target separation.
+        leakage_reason:
+          type: string
+          description: Present only when `is_candidate_leakage` is true.
+
+    DatasetProfile:
+      type: object
+      description: >
+        The `profile` object returned by `POST /api/datasets` (the `profileCsv` output in
+        apps/web/src/profiles.js). It is the real, per-upload profiling result the cockpit
+        consumes — a superset of the persisted DatasetVersion contract, plus the additive
+        fields (categorical_features, datetime_columns, sampled, per-column example_values).
+      required: [dataset_id, row_count, target, leakage_candidates, safe_features, split, columns]
+      properties:
+        dataset_id: { type: string }
+        row_count:
+          type: integer
+          description: Rows observed in the (possibly sampled) CSV.
+        target:
+          type: [string, "null"]
+          description: The target column name, or null when none was supplied.
+        target_definition:
+          type: [string, "null"]
+          description: A human-authored definition; null for a fresh upload.
+        leakage_candidates:
+          type: array
+          items: { type: string }
+        safe_features:
+          type: array
+          items: { type: string }
+        categorical_features:
+          type: array
+          items: { type: string }
+          description: Suggested categoricals (categorical + boolean columns). Omitted on an empty CSV.
+        datetime_columns:
+          type: array
+          items: { type: string }
+          description: Detected datetime columns. Omitted on an empty CSV.
+        split: { $ref: "#/components/schemas/ProfileSplit" }
+        columns:
+          type: array
+          items: { $ref: "#/components/schemas/ProfileColumn" }
+        sampled:
+          type: boolean
+          description: True when the CSV was truncated to the profiling row cap (5000).
+
+    ProfileSplit:
+      type: object
+      description: >
+        The suggested split `profileCsv` attaches. Unlike SplitStrategy this allows the
+        `random` fallback used when no usable creation-time column exists.
+      required: [strategy, ratios, seed]
+      properties:
+        strategy:
+          type: string
+          enum: [time_based, random]
+        time_col:
+          type: string
+          description: Present only for a time_based split.
+        ratios:
+          type: array
+          items: { type: number }
+          minItems: 3
+          maxItems: 3
+          description: "[train, validation, test]"
+        seed: { type: integer, default: 42 }
+
+    Dataset:
+      type: object
+      description: >
+        A row of the `dataset` catalog (apps/web/schema.sql) — an UPLOADED dataset, distinct
+        from the per-study DatasetVersion. Records the CSV's content hash and the cached
+        `profileCsv` result so a study can attach to it by dataset_id.
+      required: [id, created_at]
+      properties:
+        id:
+          type: string
+          description: dataset_<ulid> or a caller-supplied, sanitized id.
+        source:
+          type: string
+          enum: [uploaded, bundled]
+        content_hash:
+          type: string
+          description: sha256 of the raw CSV bytes.
+        row_count:
+          type: integer
+          description: Rows observed (sampled, capped).
+        target:
+          type: [string, "null"]
+          description: Optional target hint used for leakage scoring.
+        profile:
+          allOf:
+            - $ref: "#/components/schemas/DatasetProfile"
+          description: >
+            The cached profileCsv() result (stored as profile_json in D1). Surfaced as a
+            structured object here.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     Hypothesis:
       type: object
