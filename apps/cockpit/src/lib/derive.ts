@@ -3,10 +3,12 @@
  * render: metric formatting, guardrail derivation, run/critique linking, the
  * merged ledger feed, and a best-effort NL→constraint parse for the feedback box.
  *
- * NOTE: the API carries no timestamps, so the ledger is ordered by event type
- * then array sequence (feedback → runs → critiques → decisions), not by clock.
+ * NOTE: every entity carries a `created_at` (date-time) — the ledger is ordered
+ * by that real clock when present, falling back to array sequence only when a
+ * timestamp is missing.
  */
 import type {
+  Constraints,
   Critique,
   CritiqueKind,
   Decision,
@@ -16,6 +18,35 @@ import type {
   Study,
   StudyDetail,
 } from '../api/types'
+
+/** Entities that may carry an ISO `created_at`. */
+type Timestamped = { created_at?: string }
+
+/** Epoch millis for a `created_at`, or NaN when absent/unparseable. */
+function createdAtMs(x: Timestamped): number {
+  if (!x.created_at) return Number.NaN
+  const t = Date.parse(x.created_at)
+  return Number.isNaN(t) ? Number.NaN : t
+}
+
+/**
+ * Stable chronological sort by `created_at`. Items with a timestamp come first
+ * in clock order; items missing one keep their original array order (appended
+ * after the timestamped block). Never mutates the input.
+ */
+export function byCreatedAt<T extends Timestamped>(items: readonly T[]): T[] {
+  return items
+    .map((data, i) => ({ data, i, t: createdAtMs(data) }))
+    .sort((a, b) => {
+      const aHas = !Number.isNaN(a.t)
+      const bHas = !Number.isNaN(b.t)
+      if (aHas && bHas) return a.t - b.t || a.i - b.i
+      if (aHas) return -1
+      if (bHas) return 1
+      return a.i - b.i
+    })
+    .map((x) => x.data)
+}
 
 export const METRIC_LABELS: Record<string, string> = {
   recall: 'Recall',
@@ -68,14 +99,22 @@ export function runsForHypothesis(runs: Run[], hypothesisId: string): Run[] {
   return runs.filter((r) => r.hypothesis_id === hypothesisId)
 }
 
-/** No timestamps in the API — "latest" is the last run in array order. */
+/** "Latest" = the run with the newest `created_at`; falls back to array order
+ *  (last element) when timestamps are missing. */
 export function latestRun(runs: Run[]): Run | undefined {
-  return runs.length ? runs[runs.length - 1] : undefined
+  if (runs.length === 0) return undefined
+  const ordered = byCreatedAt(runs)
+  return ordered[ordered.length - 1]
 }
 
-export function critiquesForRun(critiques: Critique[], runId: string | undefined): Critique[] {
-  if (!runId) return []
-  return critiques.filter((c) => c.target_run_id === runId)
+/**
+ * Critiques are surfaced at STUDY scope, not per-run. The backend never sets
+ * `Critique.target_run_id`, so a run-level filter on it always returns [] — that
+ * false linking is dropped. Callers that want the study's flagged critiques
+ * (leakage / test-set tuning) use `flaggedCritiques` instead.
+ */
+export function flaggedCritiques(critiques: Critique[]): Critique[] {
+  return critiques.filter((c) => c.kind === 'leakage' || c.kind === 'test_set_tuning')
 }
 
 export function decisionsForRun(decisions: Decision[], runId: string | undefined): Decision[] {
@@ -130,24 +169,73 @@ export function runStatusMeta(status: RunStatus): RunStatusMeta {
 
 export type DerivedGuardrails = { primaryMetric?: string; guardrails: string[] }
 
-/** Guardrails aren't on Study; derive them from parsed feedback constraints. */
+function constraintsOf(detail: StudyDetail): Constraints | undefined {
+  return detail.study?.constraints
+}
+
+/**
+ * Guardrails + primary metric. PRIMARY source is `study.constraints` (the human
+ * checkpoint persists `primary_metric` + `guardrails[].expr` there). We then
+ * union any additional signals parsed from natural-language feedback notes, so a
+ * mid-study steer that adds a guardrail still shows up. (Fixes the old
+ * "None recorded yet" — guardrails ARE on Study, via `constraints`.)
+ */
 export function deriveGuardrails(detail: StudyDetail): DerivedGuardrails {
   const guardrails = new Set<string>()
   let primaryMetric: string | undefined
+
+  const constraints = constraintsOf(detail)
+  if (constraints) {
+    if (typeof constraints.primary_metric === 'string') primaryMetric = constraints.primary_metric
+    for (const g of constraints.guardrails ?? []) {
+      if (typeof g.expr === 'string' && g.expr.trim()) guardrails.add(g.expr.trim())
+    }
+  }
+
   for (const fb of detail.feedback ?? []) {
     const parsed = fb.parsed_constraints as Record<string, unknown> | undefined
     if (!parsed) continue
-    if (typeof parsed.primary_metric === 'string') primaryMetric = parsed.primary_metric
+    // Feedback only overrides the headline metric if constraints didn't set one.
+    if (!primaryMetric && typeof parsed.primary_metric === 'string') {
+      primaryMetric = parsed.primary_metric
+    }
     const g = parsed.guardrail ?? parsed.guardrails
     if (typeof g === 'string') guardrails.add(g)
     else if (Array.isArray(g)) g.forEach((x) => typeof x === 'string' && guardrails.add(x))
   }
+
   return { primaryMetric, guardrails: [...guardrails] }
 }
 
-/** Banned columns = flagged leakage candidates ∪ explicit ban_feature feedback. */
+/** Pull a numeric FPR bound out of a guardrail expr like "false_positive_rate <= 0.20". */
+export function guardrailFprBound(exprs: string[]): number | undefined {
+  for (const e of exprs) {
+    const m = e.match(/false[_ ]?positive[_ ]?rate\s*<?=\s*(0?\.\d+|\d+(?:\.\d+)?)/i)
+    if (m) {
+      const v = Number(m[1])
+      if (Number.isFinite(v)) return v
+    }
+  }
+  return undefined
+}
+
+/** The FPR a run actually tuned/evaluated at, if it reports one (`target_fpr`). */
+export function runTargetFpr(run: Run | undefined): number | undefined {
+  const v = run?.metrics?.target_fpr
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+/**
+ * Banned columns. PRIMARY source is `study.constraints.banned_columns` (the
+ * authoritative ban list from the contract / human checkpoint). We then union
+ * dataset leakage candidates and any explicit `ban_feature` feedback so a
+ * mid-study ban shows up before the contract is re-persisted.
+ */
 export function deriveBannedColumns(detail: StudyDetail): Set<string> {
   const banned = new Set<string>()
+  for (const name of constraintsOf(detail)?.banned_columns ?? []) {
+    if (name) banned.add(name)
+  }
   for (const col of detail.dataset_version?.columns ?? []) {
     if (col.is_candidate_leakage) banned.add(col.name)
   }
@@ -193,20 +281,32 @@ export function guardrailLabel(expr: string): string {
 }
 
 export type LedgerEntry =
-  | { kind: 'feedback'; id: string; data: Feedback }
-  | { kind: 'run'; id: string; data: Run }
-  | { kind: 'critique'; id: string; data: Critique }
-  | { kind: 'decision'; id: string; data: Decision }
+  | { kind: 'feedback'; id: string; data: Feedback; created_at?: string }
+  | { kind: 'run'; id: string; data: Run; created_at?: string }
+  | { kind: 'critique'; id: string; data: Critique; created_at?: string }
+  | { kind: 'decision'; id: string; data: Decision; created_at?: string }
 
+/**
+ * The merged ledger feed, ordered by real `created_at` across all event types.
+ * Each entry carries the source timestamp so the timeline can sort one unified
+ * stream (a critique that lands between two runs shows between them). Entries
+ * without a timestamp keep their relative array order at the end.
+ */
 export function buildLedger(detail: StudyDetail): LedgerEntry[] {
   const entries: LedgerEntry[] = []
   ;(detail.feedback ?? []).forEach((data, i) =>
-    entries.push({ kind: 'feedback', id: data.id ?? `fb-${i}`, data }),
+    entries.push({ kind: 'feedback', id: data.id ?? `fb-${i}`, data, created_at: data.created_at }),
   )
-  ;(detail.runs ?? []).forEach((data) => entries.push({ kind: 'run', id: data.id, data }))
-  ;(detail.critiques ?? []).forEach((data) => entries.push({ kind: 'critique', id: data.id, data }))
-  ;(detail.decisions ?? []).forEach((data) => entries.push({ kind: 'decision', id: data.id, data }))
-  return entries
+  ;(detail.runs ?? []).forEach((data) =>
+    entries.push({ kind: 'run', id: data.id, data, created_at: data.created_at }),
+  )
+  ;(detail.critiques ?? []).forEach((data) =>
+    entries.push({ kind: 'critique', id: data.id, data, created_at: data.created_at }),
+  )
+  ;(detail.decisions ?? []).forEach((data) =>
+    entries.push({ kind: 'decision', id: data.id, data, created_at: data.created_at }),
+  )
+  return byCreatedAt(entries)
 }
 
 export function shortId(id: string | undefined, len = 6): string {
@@ -214,6 +314,24 @@ export function shortId(id: string | undefined, len = 6): string {
   return id.length > len ? `…${id.slice(-len)}` : id
 }
 
+/**
+ * The metric key used to pick a run's headline number from `run.metrics`. The
+ * study's recorded `metric` (e.g. "recall_at_fpr") is the key the runner writes,
+ * so it stays primary here; `constraints.primary_metric` (e.g. "recall") is the
+ * human-facing NAME shown in the header (see `headlineMetric`).
+ */
 export function primaryMetricKey(study: Study): string | undefined {
-  return study.metric || undefined
+  return study.metric || study.constraints?.primary_metric || undefined
+}
+
+/**
+ * The headline metric for the study header. `name` is what the human asked for
+ * (`constraints.primary_metric`, e.g. "recall"); `metric` is what the runner
+ * optimizes/records (`study.metric`, e.g. "recall_at_fpr"). When they differ we
+ * surface both so the 0.10-vs-0.20 / recall-vs-recall@fpr gap isn't hidden.
+ */
+export function headlineMetric(study: Study): { name?: string; metric?: string; differ: boolean } {
+  const name = study.constraints?.primary_metric || undefined
+  const metric = study.metric || undefined
+  return { name, metric, differ: Boolean(name && metric && name !== metric) }
 }

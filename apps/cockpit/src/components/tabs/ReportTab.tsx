@@ -40,6 +40,7 @@ export function ReportTab({
       <div className="grid items-start gap-6 lg:grid-cols-2">
         <RecommendationPanel
           study={study}
+          detail={detail}
           recommendation={recommendation}
           flag={flag}
           actions={actions}

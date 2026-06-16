@@ -1,9 +1,16 @@
 /** Persistent study context — a study switcher, target/metric, the trials gauge,
- *  the live status (or a methodological-flag pill), and the section tabs. */
+ *  the lifecycle + live status (or a methodological-flag pill), and the tabs. */
 import { ChevronsUpDownIcon, PlusIcon, TriangleAlertIcon } from 'lucide-react'
 import type { Critique, Run, Study } from '@/api/types'
 import { useStudies } from '@/api/hooks'
-import { CRITIQUE_LABEL, shortId } from '@/lib/derive'
+import {
+  byCreatedAt,
+  CRITIQUE_LABEL,
+  guardrailFprBound,
+  headlineMetric,
+  runTargetFpr,
+  shortId,
+} from '@/lib/derive'
 import { navigate, studyHref, type StudyTab } from '@/lib/router'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,6 +24,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { StudyStatusBadge } from '@/components/study/StudyStatusBadge'
 import { TabBar } from '@/components/layout/TabBar'
 
 function StudySwitcher({ studyId, tab }: { studyId: string; tab: StudyTab }) {
@@ -101,6 +110,63 @@ function FlagPill({ flag, studyId }: { flag: Critique; studyId: string }) {
   )
 }
 
+/** The headline metric. Shows the human-facing primary_metric and, when it
+ *  differs, the recorded study.metric the runner optimizes — so e.g. recall vs
+ *  recall_at_fpr isn't hidden. */
+function MetricBadge({ study }: { study: Study }) {
+  const { name, metric, differ } = headlineMetric(study)
+  const primary = name ?? metric
+  if (!primary) return null
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant="secondary" className="gap-1.5 font-mono font-normal">
+          {primary}
+          {differ && <span className="text-muted-foreground/80">· {metric}</span>}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        {differ
+          ? `Primary metric "${name}" (what you asked for); the runner optimizes "${metric}".`
+          : `Primary metric "${primary}".`}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** Guardrail FPR bound vs the FPR the latest completed run actually tuned at —
+ *  surfaced side-by-side so a 0.10-vs-0.20 gap is visible, not hidden. */
+function FprBadge({ study, runs }: { study: Study; runs: Run[] }) {
+  const guardExprs = (study.constraints?.guardrails ?? [])
+    .map((g) => g.expr)
+    .filter((e): e is string => Boolean(e))
+  const bound = guardrailFprBound(guardExprs)
+  const latestCompleted = byCreatedAt(runs.filter((r) => r.status === 'completed')).slice(-1)[0]
+  const runFpr = runTargetFpr(latestCompleted)
+  if (bound == null && runFpr == null) return null
+  const mismatch = bound != null && runFpr != null && Math.abs(bound - runFpr) > 1e-9
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="outline"
+          className="gap-1.5 bg-transparent font-mono font-normal"
+          style={mismatch ? { borderColor: 'var(--amber)', color: 'var(--amber)' } : undefined}
+        >
+          FPR ≤ {bound != null ? bound : '—'}
+          {runFpr != null && <span className="text-muted-foreground">@ {runFpr}</span>}
+          {mismatch && <TriangleAlertIcon className="size-3" />}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        Guardrail FPR ≤ {bound ?? '—'}
+        {runFpr != null && ` · latest run tuned at FPR ${runFpr}`}
+        {mismatch && ' — the run target differs from the guardrail.'}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 export function StudyHeader({
   studyId,
   study,
@@ -130,13 +196,11 @@ export function StudyHeader({
                 target · {study.target}
               </Badge>
             )}
-            {study?.metric && (
-              <Badge variant="secondary" className="font-mono font-normal">
-                {study.metric}
-              </Badge>
-            )}
+            {study && <MetricBadge study={study} />}
+            {study && <FprBadge study={study} runs={runs} />}
             <TrialsGauge runs={runs} study={study} />
             <Separator orientation="vertical" className="hidden h-5 sm:block" />
+            {study && <StudyStatusBadge status={study.status} />}
             {flag ? <FlagPill flag={flag} studyId={studyId} /> : <StatusPill runs={runs} />}
           </div>
         </div>

@@ -1,8 +1,9 @@
 /** The data contract: row count, split strategy, and the column table where
- *  leakage-flagged columns carry a [Ban] action. */
+ *  leakage-flagged columns carry a [Ban] action (disabled until unlocked). */
 import { Loader2Icon, TriangleAlertIcon } from 'lucide-react'
 import type { DatasetVersion } from '@/api/types'
 import type { StudyActions } from '@/api/hooks'
+import { useHasApiToken } from '@/api/token'
 import { shortId } from '@/lib/derive'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -53,6 +54,7 @@ export function DataContractCard({
   const columns = dataset.columns ?? []
   const split = splitLine(dataset)
   const banPending = actions.banColumn.isPending ? actions.banColumn.variables : undefined
+  const locked = !useHasApiToken()
 
   return (
     <Card>
@@ -77,8 +79,10 @@ export function DataContractCard({
         {columns.length === 0 ? (
           <EmptyCard title="No columns profiled" />
         ) : (
-          <div className="overflow-hidden rounded-lg border">
-            <Table>
+          // overflow-x-auto (not overflow-hidden) so the table scrolls rather
+          // than clips on narrow viewports.
+          <div className="overflow-x-auto rounded-lg border">
+            <Table className="min-w-[32rem]">
               <TableHeader>
                 <TableRow>
                   <TableHead>Column</TableHead>
@@ -139,19 +143,37 @@ export function DataContractCard({
                             banned
                           </Badge>
                         ) : col.is_candidate_leakage ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-destructive hover:text-destructive"
-                            disabled={banPending === col.name}
-                            onClick={() => actions.banColumn.mutate(col.name)}
-                          >
-                            {banPending === col.name ? (
-                              <Loader2Icon className="size-3.5 animate-spin" />
-                            ) : (
-                              'Ban'
-                            )}
-                          </Button>
+                          locked ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="inline-flex">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-destructive hover:text-destructive"
+                                    disabled
+                                  >
+                                    Ban
+                                  </Button>
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>Unlock to enable writes</TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-destructive hover:text-destructive"
+                              disabled={banPending === col.name}
+                              onClick={() => actions.banColumn.mutate(col.name)}
+                            >
+                              {banPending === col.name ? (
+                                <Loader2Icon className="size-3.5 animate-spin" />
+                              ) : (
+                                'Ban'
+                              )}
+                            </Button>
+                          )
                         ) : null}
                       </TableCell>
                     </TableRow>

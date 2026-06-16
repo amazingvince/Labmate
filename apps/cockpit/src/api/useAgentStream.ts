@@ -32,7 +32,13 @@ export type AgentEvent = {
   [k: string]: unknown
 }
 
-export type StreamStatus = 'connecting' | 'connected' | 'runtime_unavailable' | 'error'
+export type StreamStatus =
+  | 'connecting' // before the first successful open
+  | 'connected' // live
+  | 'reconnecting' // transport dropped AFTER a successful open; backing off
+  | 'runtime_unavailable' // worker says no runtime is wired/reachable
+  | 'error' // a terminal server-sent error frame
+  | 'ended' // the session reached a terminal event and the stream closed
 
 const MAX_EVENTS = 300
 const MAX_BACKOFF_MS = 15_000
@@ -79,6 +85,9 @@ export function useAgentStream(
     // Latched once the study reaches a terminal event; a normal stream end after this
     // is not an error and must not reconnect (which would replay the buffer + re-refetch).
     let finished = false
+    // True once the EventSource has opened at least once — distinguishes a first
+    // connection ("Connecting…") from a dropped one ("Reconnecting").
+    let hasConnected = false
     const TERMINAL = new Set(['study.done', 'session.ended', 'loop.finished'])
 
     const push = (raw: Record<string, unknown> | undefined, fallbackKind: string) => {
@@ -101,6 +110,7 @@ export function useAgentStream(
 
       es.onopen = () => {
         attempts = 0
+        hasConnected = true
         setStatus((s) => (s === 'runtime_unavailable' ? s : 'connected'))
       }
 
@@ -109,6 +119,18 @@ export function useAgentStream(
         unavailable = true
         closed = true
         setStatus('runtime_unavailable')
+        push(raw, fallbackKind)
+        es?.close()
+      }
+
+      // Latch a terminal server-sent error frame: render the error, stop
+      // reconnecting (the body has already closed; hammering a down runtime is
+      // pointless). Used for ANY named `error` frame that carries a body, not
+      // just runtime_unreachable.
+      const latchError = (raw: Record<string, unknown> | undefined, fallbackKind: string) => {
+        unavailable = true
+        closed = true
+        setStatus('error')
         push(raw, fallbackKind)
         es?.close()
       }
@@ -135,16 +157,18 @@ export function useAgentStream(
         else push(raw, 'info')
       })
 
-      // Named channel `error`: a SERVER-sent error frame (has .data) — e.g. the
-      // worker reached for a configured runtime and the fetch threw
-      // (runtime_unreachable): a single finite frame, then the body closes. Latch it
-      // like unavailable so we stop reconnecting instead of hammering a down runtime.
+      // Named channel `error`: a SERVER-sent error frame (has .data) — the worker
+      // reached a configured runtime and the fetch threw (runtime_unreachable), or
+      // the loop itself errored. Either way it's a single finite frame and the body
+      // then closes, so ANY named error frame that carries a body is TERMINAL:
+      // latch it and stop reconnecting. runtime_unreachable keeps the dedicated
+      // "Offline" framing; everything else shows as a terminal error.
       // Transport errors also dispatch 'error' but carry no .data — let onerror handle those.
       es.addEventListener('error', (ev) => {
         const raw = safeParse((ev as MessageEvent).data)
         if (!raw) return
         if (raw.kind === 'runtime_unreachable') latchUnavailable(raw, 'runtime_unreachable')
-        else push(raw, 'loop.error')
+        else latchError(raw, 'loop.error')
       })
 
       // Transport-level error (connection dropped / never opened). Reconnect with
@@ -155,9 +179,12 @@ export function useAgentStream(
         es?.close()
         if (finished) {
           closed = true
+          setStatus('ended')
           return
         }
-        setStatus('error')
+        // Before the first successful open this is still an initial connect, so
+        // keep "connecting"; once we've connected at least once it's a reconnect.
+        setStatus(hasConnected ? 'reconnecting' : 'connecting')
         attempts += 1
         const delay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(attempts, 4))
         retryTimer = setTimeout(connect, delay)
