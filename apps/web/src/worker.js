@@ -6,10 +6,12 @@
  * (Claude's semantic tools) and the cockpit (the human's mission control). Every
  * route here matches apps/api-spec/openapi.yaml.
  *
- * Routes (all POST require the internal bearer token; the two GET reads are public):
+ * Routes (all POST require the internal bearer token; the GET reads are public):
  *   POST /api/studies               create_study           -> 201 { id, status }
  *   GET  /api/studies               list studies (public)  -> 200 { studies }
  *   GET  /api/studies/:id           study detail (public)  -> 200 StudyDetail | 404
+ *   GET  /api/studies/:id/report    latest model card (public) -> 200 Report | 404
+ *   GET  /api/studies/:id/grade     grade study (public read)  -> 200 GradeResult | 404
  *   GET  /api/studies/:id/stream    live agent SSE (public) -> 200 text/event-stream
  *   POST /api/studies/:id/message   suggest_change          -> 202 { status } | 503
  *   POST /api/profile               profile_dataset        -> 200 DatasetVersion | 404
@@ -34,6 +36,39 @@ import { evaluateRubric } from "./grade.js";
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
+// Allowlist of the two known cockpit hosts. We keep `*` for the origin because the
+// API is bearer-only (no cookies are read or set), so a permissive CORS origin does
+// not expose any ambient-authority credential — the bearer token must be supplied
+// explicitly by the caller. The known hosts are kept for documentation and for any
+// future tightening (flip to origin reflection here if cookies are ever introduced).
+const ALLOWED_ORIGINS = ["https://labmate.amazingvince.com", "https://amazingvince.com"];
+
+/**
+ * Build CORS headers for a request. Origin stays `*` (bearer-only API, no cookies),
+ * but allow-headers REFLECTS the browser's Access-Control-Request-Headers so a
+ * preflight never fails on a header the client legitimately sends. Falls back to the
+ * known set when the request omits the hint.
+ */
+function corsHeaders(request) {
+  const reqHeaders =
+    (request && request.headers && request.headers.get("access-control-request-headers")) ||
+    "authorization,content-type";
+  // Echo a known cockpit origin back explicitly (clearer than `*`, and lets us add
+  // `Vary: Origin`); fall back to `*` for any other caller. Bearer-only, no cookies, so
+  // `*` remains safe — there is no ambient credential to protect.
+  const origin = request && request.headers && request.headers.get("origin");
+  const allowOrigin = origin && ALLOWED_ORIGINS.includes(origin) ? origin : "*";
+  return {
+    "access-control-allow-origin": allowOrigin,
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": reqHeaders,
+    "access-control-max-age": "86400",
+    "vary": "Origin, Access-Control-Request-Headers",
+  };
+}
+
+// Static CORS for response paths that don't carry the originating request (the
+// allow-headers value is only consulted on preflights, which use corsHeaders()).
 const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,POST,OPTIONS",
@@ -52,6 +87,8 @@ const errorBody = (error, detail) => (detail ? { error, detail } : { error });
 const fail = (status, error, detail) => json(errorBody(error, detail), status);
 const unauthorized = () => fail(401, "unauthorized", "Missing or invalid internal token.");
 const notFound = (detail) => fail(404, "not_found", detail);
+const writesDisabled = () =>
+  fail(503, "writes_disabled", "Server internal token is unset or too short; writes are disabled. Reads remain public.");
 
 /** Log a server error; only reveal the raw message in dev (avoid leaking SQL/internal detail). */
 function serverError(env, code, e) {
@@ -72,16 +109,45 @@ function timingSafeEqual(a, b) {
   return diff === 0;
 }
 
+// Minimum acceptable length for the shared internal token. A token shorter than this
+// (or absent) is treated as misconfiguration: writes are refused (503) rather than
+// silently falling back to a guessable default. Reads stay public regardless.
+const MIN_TOKEN_LEN = 24;
+let _warnedWeakToken = false;
+
+/**
+ * Is the configured internal token usable for authenticating writes? The token must be
+ * present and at least MIN_TOKEN_LEN chars. We NEVER hardcode a default — a missing or
+ * weak token means writes are refused, not allowed. Logs a one-line warning the first
+ * time a write path observes a misconfigured token.
+ */
+function serverTokenUsable(env) {
+  const tok = env && env.LABMATE_INTERNAL_TOKEN;
+  const ok = typeof tok === "string" && tok.length >= MIN_TOKEN_LEN;
+  if (!ok && !_warnedWeakToken) {
+    _warnedWeakToken = true;
+    console.warn(
+      `[labmate] LABMATE_INTERNAL_TOKEN is missing or <${MIN_TOKEN_LEN} chars; refusing all writes (503). Set it with: wrangler secret put LABMATE_INTERNAL_TOKEN`,
+    );
+  }
+  return ok;
+}
+
 /**
  * Require the shared internal token on writes. NOTE: the human checkpoint (approval)
  * is enforced out-of-band — the cockpit is where a human approves, which records a
  * feedback(type=approval); the MCP server and cockpit share LABMATE_INTERNAL_TOKEN by
  * design (docs/ENV.md). This token authenticates the caller, not the human approval.
+ *
+ * Returns false unless the SERVER token is usable (present + >= MIN_TOKEN_LEN) AND the
+ * caller presents a matching bearer. The usability gate is also checked on the write
+ * path to return a clearer 503 (vs an opaque 401) when the server is misconfigured.
  */
 function checkAuth(request, env) {
+  if (!serverTokenUsable(env)) return false;
   const auth = request.headers.get("authorization") || "";
   const token = auth.replace(/^Bearer\s+/i, "");
-  return !!(token && env.LABMATE_INTERNAL_TOKEN && timingSafeEqual(token, env.LABMATE_INTERNAL_TOKEN));
+  return !!(token && timingSafeEqual(token, env.LABMATE_INTERNAL_TOKEN));
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +201,23 @@ async function sha256hex(str) {
 
 let _schemaReady = null;
 
+// Additive, idempotent column migrations for DBs created before a column existed.
+// SQLite has no "ADD COLUMN IF NOT EXISTS"; each is run independently and a
+// "duplicate column" error is swallowed, so this never aborts the base schema batch.
+const ADDITIVE_MIGRATIONS = [
+  "ALTER TABLE run ADD COLUMN applied_feedback_id TEXT",
+];
+
+async function applyAdditiveMigrations(env) {
+  for (const sql of ADDITIVE_MIGRATIONS) {
+    try {
+      await env.DB.prepare(sql).run();
+    } catch {
+      // Column already exists (or table not yet created) — additive migrations are best-effort.
+    }
+  }
+}
+
 function splitSql(sql) {
   return sql
     .split("\n")
@@ -148,15 +231,48 @@ function splitSql(sql) {
     .filter((s) => s.length > 0 && !/^PRAGMA/i.test(s));
 }
 
+/**
+ * Self-apply schema.sql once per isolate. Wrangler migrations remain authoritative —
+ * this is a convenience for `wrangler dev` / fresh DBs. It is BEST-EFFORT: a transient
+ * DDL failure must NOT take down public reads. We memoize the successful promise; on
+ * failure we clear the memo (so a later write path can retry) and return false rather
+ * than throwing into read handlers.
+ *
+ * @returns {Promise<boolean>} true if the schema batch succeeded this isolate.
+ */
 function ensureSchema(env) {
   if (!_schemaReady) {
     const statements = splitSql(schemaSQL).map((s) => env.DB.prepare(s));
-    _schemaReady = env.DB.batch(statements).catch((e) => {
-      _schemaReady = null; // allow a retry on the next request
-      throw e;
-    });
+    _schemaReady = env.DB.batch(statements)
+      .then(() => applyAdditiveMigrations(env))
+      .then(() => true)
+      .catch((e) => {
+        _schemaReady = null; // allow a retry on the next request
+        console.warn("[labmate] schema bootstrap failed (best-effort):", e && e.message ? e.message : e);
+        return false;
+      });
   }
   return _schemaReady;
+}
+
+/**
+ * Hard schema requirement for write paths. Awaits ensureSchema and, if it failed,
+ * forces a single synchronous retry that DOES surface the error to the caller so a
+ * write never proceeds against a missing schema. Throws on a hard failure.
+ */
+async function requireSchema(env) {
+  const ok = await ensureSchema(env);
+  if (ok) return;
+  // ensureSchema cleared its memo on failure; retry once and surface any error.
+  const statements = splitSql(schemaSQL).map((s) => env.DB.prepare(s));
+  _schemaReady = env.DB.batch(statements)
+    .then(() => applyAdditiveMigrations(env))
+    .then(() => true)
+    .catch((e) => {
+      _schemaReady = null;
+      throw e;
+    });
+  await _schemaReady;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +345,7 @@ function mapRun(row) {
     dataset_hash: row.dataset_hash,
     code_hash: row.code_hash,
     seed: row.seed,
+    applied_feedback_id: row.applied_feedback_id, // which human feedback shaped this run (C11)
     created_at: row.created_at,
   });
 }
@@ -333,12 +450,17 @@ async function loadLedger(env, studyRow) {
 
 const PRIMARY_METRIC_KEYS = ["recall_at_fpr", "recall", "pr_auc", "roc_auc", "f1"];
 
-/** Pick the best completed run by the first available primary metric (higher is better). */
-function bestRun(runs) {
+/** Pick the best completed run by the first available primary metric (higher is better).
+ *  When `opts.excludeBaseline` is set, runs tagged "baseline" are skipped so the report's
+ *  "best" reflects a TUNED model, not the baseline (C4). */
+function bestRun(runs, opts = {}) {
   const completed = runs.filter((r) => r.status === "completed");
+  const pool = opts.excludeBaseline
+    ? completed.filter((r) => !(r.tags || []).includes("baseline"))
+    : completed;
   let best = null;
   let bestScore = -Infinity;
-  for (const r of completed) {
+  for (const r of pool) {
     const m = r.metrics || {};
     const key = PRIMARY_METRIC_KEYS.find((k) => typeof m[k] === "number");
     const score = key ? m[key] : -Infinity;
@@ -544,10 +666,19 @@ async function proposeExperiments(env, body) {
     if (n > 12) n = 12;
     cards = hypothesisLibrary(profile).slice(0, n);
   }
+  // C3 — dedupe by (study_id, statement): skip cards whose statement already exists
+  // for this study (re-proposing the same card must not duplicate the hypothesis).
+  const existingRows = await env.DB.prepare("SELECT statement FROM hypothesis WHERE study_id = ?")
+    .bind(study.id)
+    .all();
+  const seenStatements = new Set((existingRows.results || []).map((r) => r.statement));
+
   const created = nowIso();
   const out = [];
   const stmts = [];
   for (const card of cards) {
+    if (!card.statement || seenStatements.has(card.statement)) continue; // dedupe within batch + against existing
+    seenStatements.add(card.statement);
     const id = newId("hyp");
     stmts.push(
       env.DB.prepare(
@@ -604,9 +735,10 @@ async function requestApproval(env, body) {
   return json({ approval_id: id, status: "pending" });
 }
 
-/** Lightweight natural-language -> constraint parse for free-text notes. */
+/** Lightweight natural-language -> constraint parse for free-text notes. Parses for
+ *  both "note" and "human_feedback" types (the cockpit and MCP use the latter). */
 function parseConstraints(content, type) {
-  if (type !== "note") return undefined;
+  if (type !== "note" && type !== "human_feedback") return undefined;
   const t = (content || "").toLowerCase();
   const c = {};
   if (/recall/.test(t) && /(precision|matters|priorit|over)/.test(t)) c.primary_metric = "recall";
@@ -710,6 +842,32 @@ async function recordDecision(env, body) {
   )
     .bind(id, body.study_id, body.action, body.promoted_run_id ?? null, body.rejected_run_id ?? null, body.reason ?? null, created)
     .run();
+
+  // C2 — study.status lifecycle {open,running,done,stopped}. A promote closes an OPEN
+  // study (done); a stop marks it stopped. Guarded by the current status so a later
+  // decision can't resurrect or clobber a terminal state.
+  if (body.action === "promote") {
+    await env.DB.prepare("UPDATE study SET status = 'done' WHERE id = ? AND status = 'open'")
+      .bind(body.study_id)
+      .run();
+  } else if (body.action === "stop") {
+    await env.DB.prepare("UPDATE study SET status = 'stopped' WHERE id = ? AND status IN ('open','running')")
+      .bind(body.study_id)
+      .run();
+  }
+
+  // C3 — a reject decision targeting a run marks that run's hypothesis 'rejected'
+  // (only when it was still proposed/approved/tested, never overriding another reject).
+  if (body.action === "reject" && body.rejected_run_id) {
+    await env.DB.prepare(
+      `UPDATE hypothesis SET status = 'rejected'
+         WHERE id = (SELECT hypothesis_id FROM run WHERE id = ? AND study_id = ?)
+           AND status IN ('proposed','approved','tested')`,
+    )
+      .bind(body.rejected_run_id, body.study_id)
+      .run();
+  }
+
   return json(
     compact({
       id,
@@ -722,6 +880,67 @@ async function recordDecision(env, body) {
     }),
     201,
   );
+}
+
+/**
+ * Extract the study's false-positive-rate upper bound from its constraints, if any.
+ * Reads constraints.guardrails which may be an array of strings ("false_positive_rate
+ * <= 0.20") and/or a guardrail string, plus a structured constraints.guardrail.
+ * Returns a number in [0,1] or null when no FPR bound is declared.
+ */
+function studyFprBound(constraints) {
+  if (!constraints || typeof constraints !== "object") return null;
+  const candidates = [];
+  const g = constraints.guardrails;
+  if (Array.isArray(g)) candidates.push(...g);
+  else if (typeof g === "string") candidates.push(g);
+  if (typeof constraints.guardrail === "string") candidates.push(constraints.guardrail);
+  let bound = null;
+  for (const c of candidates) {
+    if (typeof c !== "string") continue;
+    const m = c.match(/false[_\s]?positive[_\s]?rate\s*<=?\s*([0-9]*\.?[0-9]+)/i);
+    if (m) {
+      const v = parseFloat(m[1]);
+      if (Number.isFinite(v) && (bound === null || v < bound)) bound = v;
+    }
+  }
+  return bound;
+}
+
+/** Read a manifest's declared max_fpr (manifest.metric.max_fpr, with a top-level
+ *  manifest.max_fpr fallback). Returns a finite number or null. */
+function manifestMaxFpr(manifest) {
+  const v = manifest && ((manifest.metric && manifest.metric.max_fpr) ?? manifest.max_fpr);
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/**
+ * C11 — resolve the feedback id this run applied. Prefer an explicit value on the
+ * payload; else auto-attach the most-recent feedback row that produced
+ * parsed_constraints (the human guidance that actually shaped the plan). Returns a
+ * feedback id string or null.
+ */
+async function resolveAppliedFeedbackId(env, studyId, explicit) {
+  if (explicit) return explicit;
+  const row = await env.DB.prepare(
+    `SELECT id FROM feedback
+       WHERE study_id = ? AND parsed_constraints_json IS NOT NULL AND parsed_constraints_json <> ''
+       ORDER BY created_at DESC LIMIT 1`,
+  )
+    .bind(studyId)
+    .first();
+  return row ? row.id : null;
+}
+
+/** C3 — once a run is recorded for a hypothesis, advance the hypothesis to 'tested'
+ *  (only from proposed/approved; never overriding a terminal 'rejected'). */
+async function markHypothesisTested(env, hypothesisId) {
+  if (!hypothesisId) return;
+  await env.DB.prepare(
+    "UPDATE hypothesis SET status = 'tested' WHERE id = ? AND status IN ('proposed','approved')",
+  )
+    .bind(hypothesisId)
+    .run();
 }
 
 const MANIFEST_REQUIRED = ["study_id", "dataset_uri", "target", "task_type", "split", "features", "model", "metric"];
@@ -788,6 +1007,19 @@ async function launchExperiment(env, body) {
     return fail(422, "invalid_manifest", `leakage columns present in features: ${leakedInFeatures.sort().join(", ")}`);
   }
 
+  // C5 — FPR guardrail. If the manifest declares metric.max_fpr that EXCEEDS the
+  // study's false_positive_rate guardrail bound, reject (422): a tuning target looser
+  // than the agreed guardrail would silently violate the metric contract.
+  const fprBound = studyFprBound(study.constraints);
+  const declaredMaxFpr = manifestMaxFpr(manifest);
+  if (fprBound !== null && declaredMaxFpr !== null && declaredMaxFpr > fprBound) {
+    return fail(
+      422,
+      "invalid_manifest",
+      `manifest.metric.max_fpr (${declaredMaxFpr}) exceeds the study guardrail false_positive_rate <= ${fprBound}`,
+    );
+  }
+
   // 2. Compute gate: a recorded human approval must exist, and budget must remain (402)
   const approvalCount = await env.DB.prepare(
     "SELECT COUNT(*) AS c FROM feedback WHERE study_id = ? AND type = 'approval'",
@@ -803,8 +1035,18 @@ async function launchExperiment(env, body) {
     return fail(402, "budget_exceeded", `Run budget exhausted (${runCount.c}/${maxTrials} trials used).`);
   }
 
-  // 3. Submit the manifest to the fixed Modal runner (no arbitrary code)
-  const result = await runOnModal(env, manifest);
+  // 3. Submit the manifest to the fixed Modal runner (no arbitrary code). Pass the
+  // guardrail context through in `declared` so the runner can enforce/threshold on it.
+  const primaryMetric = (study.constraints && study.constraints.primary_metric) || study.metric || null;
+  const runnerPayload = {
+    ...manifest,
+    declared: {
+      ...(manifest.declared || {}),
+      ...(declaredMaxFpr !== null ? { max_fpr: declaredMaxFpr } : fprBound !== null ? { max_fpr: fprBound } : {}),
+      ...(primaryMetric ? { primary_metric: primaryMetric } : {}),
+    },
+  };
+  const result = await runOnModal(env, runnerPayload);
   if (result.error === "runner_unavailable") {
     return fail(502, "runner_unavailable", result.detail || "MODAL_RUNNER_URL is not configured.");
   }
@@ -812,7 +1054,10 @@ async function launchExperiment(env, body) {
     return fail(422, "invalid_manifest", result.reason || "runner rejected the manifest");
   }
 
-  // 4. Record the manifest + the run with metrics/params/artifacts and provenance
+  // 4. Record the manifest + the run with metrics/params/artifacts and provenance.
+  // C11 — resolve which human feedback shaped this run (explicit, else most-recent
+  // feedback that produced parsed_constraints) and persist it on BOTH manifest + run.
+  const appliedFeedbackId = await resolveAppliedFeedbackId(env, study.id, manifest.applied_feedback_id);
   const manifestId = newId("man");
   const created = nowIso();
   await env.DB.prepare(
@@ -829,7 +1074,7 @@ async function launchExperiment(env, body) {
       JSON.stringify(manifest.search || {}),
       JSON.stringify(manifest),
       manifest.split?.seed ?? null,
-      manifest.applied_feedback_id ?? null,
+      appliedFeedbackId,
       created,
     )
     .run();
@@ -845,12 +1090,15 @@ async function launchExperiment(env, body) {
   const params = result.params || manifest.model?.params || {};
   const artifacts = result.artifacts || {};
   const seed = prov.seed ?? manifest.split?.seed ?? null;
+  // C6 — persist model_family. Manifest path already has model.family; keep a
+  // params.model fallback for parity with the script path.
+  const modelFamily = manifest.model?.family ?? params.model ?? null;
   const runId = newId("run");
 
   await env.DB.prepare(
     `INSERT INTO run (id, study_id, hypothesis_id, manifest_id, tracker_run_id, status, model_family,
-       metrics_json, params_json, artifacts_json, rationale, tags_json, executor, dataset_hash, code_hash, seed, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       metrics_json, params_json, artifacts_json, rationale, tags_json, executor, dataset_hash, code_hash, seed, applied_feedback_id, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       runId,
@@ -859,7 +1107,7 @@ async function launchExperiment(env, body) {
       manifestId,
       result.tracker_run_id ?? null,
       status,
-      manifest.model?.family ?? null,
+      modelFamily,
       JSON.stringify(metrics),
       JSON.stringify(params),
       JSON.stringify(artifacts),
@@ -869,9 +1117,13 @@ async function launchExperiment(env, body) {
       prov.dataset_hash ?? null,
       prov.code_hash ?? null,
       seed,
+      appliedFeedbackId,
       created,
     )
     .run();
+
+  // C3 — recording a run for a hypothesis advances it proposed/approved -> tested.
+  await markHypothesisTested(env, manifest.hypothesis_id);
 
   return json(
     compact({
@@ -890,6 +1142,7 @@ async function launchExperiment(env, body) {
       dataset_hash: prov.dataset_hash,
       code_hash: prov.code_hash,
       seed,
+      applied_feedback_id: appliedFeedbackId ?? undefined,
       created_at: created,
     }),
     201,
@@ -941,6 +1194,18 @@ async function launchScriptExperiment(env, manifest) {
     return fail(422, "invalid_manifest", `banned/leaky columns present in features: ${[...new Set(leaked)].sort().join(", ")}`);
   }
 
+  // C5 — FPR guardrail (same rule as the manifest path): a declared max_fpr looser
+  // than the study's false_positive_rate guardrail bound is rejected (422).
+  const fprBound = studyFprBound(study.constraints);
+  const declaredMaxFpr = manifestMaxFpr(manifest);
+  if (fprBound !== null && declaredMaxFpr !== null && declaredMaxFpr > fprBound) {
+    return fail(
+      422,
+      "invalid_manifest",
+      `manifest.metric.max_fpr (${declaredMaxFpr}) exceeds the study guardrail false_positive_rate <= ${fprBound}`,
+    );
+  }
+
   // 2. Compute gate: a recorded human approval must exist, and budget must remain (402)
   const approvalCount = await env.DB.prepare(
     "SELECT COUNT(*) AS c FROM feedback WHERE study_id = ? AND type = 'approval'",
@@ -957,6 +1222,9 @@ async function launchScriptExperiment(env, manifest) {
   }
 
   // 3. Submit the script to the runner's Sandbox executor (dual-mode body w/ "script").
+  // C5 — thread the FPR bound + primary metric through `declared` for runner enforcement.
+  const effectiveMaxFpr = declaredMaxFpr ?? fprBound;
+  const primaryMetric = (study.constraints && study.constraints.primary_metric) || study.metric || null;
   const payload = {
     script: manifest.script,
     dataset_uri: manifest.dataset_uri,
@@ -965,6 +1233,8 @@ async function launchScriptExperiment(env, manifest) {
       banned_columns: [...bannedSet],
       seed: manifest.split.seed,
       tune_on: resolvedTuneOn || "validation",
+      ...(effectiveMaxFpr !== null && effectiveMaxFpr !== undefined ? { max_fpr: effectiveMaxFpr } : {}),
+      ...(primaryMetric ? { primary_metric: primaryMetric } : {}),
     },
   };
   const result = await runOnModal(env, payload);
@@ -976,6 +1246,16 @@ async function launchScriptExperiment(env, manifest) {
   }
 
   // 4. Record the manifest (with the script in manifest_json) + the run.
+  // C11 — resolve applied_feedback_id (explicit, else most-recent parsed-constraint
+  // feedback). C6 — model_family comes from result.params.model on the script path.
+  const appliedFeedbackId = await resolveAppliedFeedbackId(env, study.id, manifest.applied_feedback_id);
+  const prov = result.provenance || {};
+  const status = ["completed", "running", "failed", "queued"].includes(result.status) ? result.status : "completed";
+  const metrics = numbersOnly(result.metrics || {});
+  const params = result.params || {};
+  const artifacts = result.artifacts || {};
+  const seed = prov.seed ?? manifest.split.seed ?? null;
+  const modelFamily = params.model ?? null; // C6: persist from result.params.model
   const manifestId = newId("man");
   const created = nowIso();
   await env.DB.prepare(
@@ -987,12 +1267,12 @@ async function launchScriptExperiment(env, manifest) {
       manifestId,
       study.id,
       manifest.hypothesis_id,
-      null,
+      modelFamily,
       JSON.stringify(features),
       JSON.stringify(manifest.search || {}),
       JSON.stringify(manifest),
       manifest.split.seed ?? null,
-      manifest.applied_feedback_id ?? null,
+      appliedFeedbackId,
       created,
     )
     .run();
@@ -1002,18 +1282,12 @@ async function launchScriptExperiment(env, manifest) {
     ? `Tests: ${hypRow.statement}`
     : `Run for hypothesis ${manifest.hypothesis_id} on study ${study.id}.`;
 
-  const prov = result.provenance || {};
-  const status = ["completed", "running", "failed", "queued"].includes(result.status) ? result.status : "completed";
-  const metrics = numbersOnly(result.metrics || {});
-  const params = result.params || {};
-  const artifacts = result.artifacts || {};
-  const seed = prov.seed ?? manifest.split.seed ?? null;
   const runId = newId("run");
 
   await env.DB.prepare(
     `INSERT INTO run (id, study_id, hypothesis_id, manifest_id, tracker_run_id, status, model_family,
-       metrics_json, params_json, artifacts_json, rationale, tags_json, executor, dataset_hash, code_hash, seed, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       metrics_json, params_json, artifacts_json, rationale, tags_json, executor, dataset_hash, code_hash, seed, applied_feedback_id, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       runId,
@@ -1022,7 +1296,7 @@ async function launchScriptExperiment(env, manifest) {
       manifestId,
       result.tracker_run_id ?? null,
       status,
-      null,
+      modelFamily,
       JSON.stringify(metrics),
       JSON.stringify(params),
       JSON.stringify(artifacts),
@@ -1032,9 +1306,13 @@ async function launchScriptExperiment(env, manifest) {
       prov.dataset_hash ?? null,
       prov.code_hash ?? null,
       seed,
+      appliedFeedbackId,
       created,
     )
     .run();
+
+  // C3 — advance the hypothesis proposed/approved -> tested now that a run exists.
+  await markHypothesisTested(env, manifest.hypothesis_id);
 
   return json(
     compact({
@@ -1053,6 +1331,7 @@ async function launchScriptExperiment(env, manifest) {
       dataset_hash: prov.dataset_hash,
       code_hash: prov.code_hash,
       seed,
+      applied_feedback_id: appliedFeedbackId ?? undefined,
       created_at: created,
     }),
     201,
@@ -1132,7 +1411,10 @@ async function queryRuns(env, body) {
   return json({ runs });
 }
 
-function buildModelCard(study, dv, L, best, baseline) {
+function buildModelCard(study, dv, L, best, baseline, opts = {}) {
+  const promoted = opts.promoted || null;
+  const provRun = opts.provRun || best || null;
+  const extraNote = opts.extraNote || null;
   const metricLine = (r) => {
     if (!r || !r.metrics) return "n/a";
     return Object.entries(r.metrics)
@@ -1140,7 +1422,10 @@ function buildModelCard(study, dv, L, best, baseline) {
       .join(", ");
   };
   const expRows = L.runs
-    .map((r) => `| ${r.id} | ${r.model_family || (r.params && r.params.family) || "?"} | ${(r.tags || []).join(",") || "-"} | ${metricLine(r)} | ${r.status} |`)
+    .map(
+      (r) =>
+        `| ${r.id} | ${r.model_family || (r.params && (r.params.model || r.params.family)) || "?"} | ${(r.tags || []).join(",") || "-"} | ${metricLine(r)} | ${r.status} |`,
+    )
     .join("\n");
   const split = (dv && dv.split_strategy) || {};
   const reproCmd = "node .claude/workflows/run-study.js examples/" + study.dataset_id;
@@ -1166,8 +1451,9 @@ ${expRows || "| (none) |  |  |  |  |"}
 
 ## Best vs baseline
 - **Baseline:** ${baseline ? `${baseline.id} (${metricLine(baseline)})` : "not found"}
-- **Best:** ${best ? `${best.id} (${metricLine(best)})` : "not found"}
-- **Compared:** ${best && baseline ? "yes" : "no"}
+- **Best:** ${best ? `${best.id} (${metricLine(best)})` : "not found"}${best && promoted && best.id === promoted.id ? " — promoted" : ""}
+- **Promoted:** ${promoted ? `${promoted.id} (${metricLine(promoted)})` : "none (no promote decision)"}
+- **Compared:** ${best && baseline && !(best && baseline && best.id === baseline.id) ? "yes" : "no"}${extraNote ? `\n- **Note:** ${extraNote}` : ""}
 
 ## Critiques & decisions
 ${L.critiques.map((c) => `- [${c.kind}] ${c.finding}${c.led_to_decision ? ` → ${c.led_to_decision}` : ""}`).join("\n") || "- none recorded"}
@@ -1187,7 +1473,7 @@ ${reproCmd}
 \`\`\`
 
 ---
-_Provenance: dataset_hash=${(best && best.dataset_hash) || (dv && dv.file_hash) || "n/a"}, code_hash pinned, seed ${split.seed ?? 42}._
+_Provenance: dataset_hash=${(provRun && provRun.dataset_hash) || (dv && dv.file_hash) || "n/a"}, code_hash=${(provRun && provRun.code_hash) || "n/a"}, seed ${(provRun && provRun.seed) ?? split.seed ?? 42}._
 `;
 }
 
@@ -1197,28 +1483,52 @@ async function writeReport(env, body) {
   const study = mapStudy(studyRow);
   const L = await loadLedger(env, studyRow);
   const dv = L.dataset_version;
-  const best = bestRun(L.runs);
   const baseline = L.runs.find((r) => (r.tags || []).includes("baseline")) || null;
 
-  const card = buildModelCard(study, dv, L, best, baseline);
+  // C4 — "best" reflects a TRUSTED outcome, not raw metric-max:
+  //  - promoted = the run id of the MOST RECENT promote decision (the human/agent's pick)
+  //  - best     = that promoted run if present, else the metric-max over NON-baseline runs
+  // The provenance footer + artifact provenance bind to the SAME chosen run (real
+  // code_hash + matching dataset_hash, never the literal 'pinned').
+  const promoteDecisions = L.decisions.filter((d) => d.action === "promote" && d.promoted_run_id);
+  const latestPromote = promoteDecisions.length ? promoteDecisions[promoteDecisions.length - 1] : null;
+  const promoted = latestPromote
+    ? L.runs.find((r) => r.id === latestPromote.promoted_run_id) || null
+    : null;
+  const metricMaxNonBaseline = bestRun(L.runs, { excludeBaseline: true });
+  const best = promoted || metricMaxNonBaseline || null;
+
+  // If the only candidate is the baseline (no tuned model beat it / none exist), say so.
+  const bestIsBaseline = !!(best && baseline && best.id === baseline.id);
+  const noTunedBeatBaseline = !promoted && !metricMaxNonBaseline; // nothing non-baseline to compare
+  const comparesBestToBaseline = !!(best && baseline) && !bestIsBaseline && !noTunedBeatBaseline;
+  const extraNote = !comparesBestToBaseline && baseline ? "no tuned model beat baseline" : null;
+
+  // The run whose provenance the report inherits (promoted first, else best).
+  const provRun = promoted || best || null;
+
+  const card = buildModelCard(study, dv, L, best, baseline, { promoted, provRun, extraNote });
   const reportType = body.report_type || "model_card";
   const key = `studies/${study.id}/report/${reportType}_${Date.now()}.md`;
   await env.ARTIFACTS.put(key, card, { httpMetadata: { contentType: "text/markdown" } });
 
-  const datasetHash = (best && best.dataset_hash) || (dv && dv.file_hash) || (await sha256hex(study.dataset_id));
-  const codeHash = (best && best.code_hash) || (await sha256hex(card)).slice(0, 12);
-  const seed = (best && best.seed) ?? (dv && dv.split_strategy && dv.split_strategy.seed) ?? 42;
-  const comparesBestToBaseline = !!(best && baseline);
+  const datasetHash = (provRun && provRun.dataset_hash) || (dv && dv.file_hash) || (await sha256hex(study.dataset_id));
+  // C4 — real code_hash from the chosen run; only synthesize a card-content hash if the
+  // run genuinely has none (never the literal string 'pinned').
+  const codeHash = (provRun && provRun.code_hash) || (await sha256hex(card)).slice(0, 12);
+  const seed = (provRun && provRun.seed) ?? (dv && dv.split_strategy && dv.split_strategy.seed) ?? 42;
   const reproCmd = `node .claude/workflows/run-study.js examples/${study.dataset_id}`;
 
   const artifactId = newId("art");
-  const meta = {
+  const meta = compact({
     best_run_id: best ? best.id : null,
+    promoted_run_id: promoted ? promoted.id : null, // C4: store BOTH
     baseline_run_id: baseline ? baseline.id : null,
     compares_best_to_baseline: comparesBestToBaseline,
     reproducible_command: reproCmd,
     report_type: reportType,
-  };
+    note: extraNote || undefined,
+  });
   await env.DB.prepare(
     `INSERT INTO artifact (id, study_id, run_id, kind, uri, dataset_hash, code_hash, seed, meta_json, created_at)
      VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -1226,7 +1536,8 @@ async function writeReport(env, body) {
     .bind(
       artifactId,
       study.id,
-      best ? best.id : null,
+      // C4 — artifact.run_id binds to the PROMOTED run (else best).
+      (promoted && promoted.id) || (best && best.id) || null,
       "report",
       key,
       datasetHash,
@@ -1244,8 +1555,10 @@ async function writeReport(env, body) {
       markdown: card,
       generated_at: nowIso(),
       best_run_id: best ? best.id : undefined,
+      promoted_run_id: promoted ? promoted.id : undefined,
       baseline_run_id: baseline ? baseline.id : undefined,
       compares_best_to_baseline: comparesBestToBaseline,
+      note: extraNote || undefined,
       reproducible_command: reproCmd,
       provenance: { dataset_hash: datasetHash, code_hash: codeHash, seed },
     }),
@@ -1269,11 +1582,12 @@ async function getReport(env, id, url) {
     .first();
   if (!row) return notFound(`No report for ${id}`);
 
-  let markdown = "";
-  if (env.ARTIFACTS) {
-    const obj = await env.ARTIFACTS.get(row.uri);
-    if (obj) markdown = await obj.text();
-  }
+  // C8 — the artifact row exists but its R2 object is gone (or R2 is unbound): that is
+  // a 404, not an empty 200. Apply to BOTH the markdown (?format=md) and JSON branches
+  // so a missing object never renders as a blank-but-successful report.
+  const obj = env.ARTIFACTS ? await env.ARTIFACTS.get(row.uri) : null;
+  if (!obj) return notFound(`Report object missing for ${id} (${row.uri})`);
+  const markdown = await obj.text();
 
   if (url && url.searchParams.get("format") === "md") {
     return new Response(markdown, {
@@ -1293,8 +1607,10 @@ async function getReport(env, id, url) {
       markdown,
       generated_at: row.created_at,
       best_run_id: meta.best_run_id || undefined,
+      promoted_run_id: meta.promoted_run_id || undefined,
       baseline_run_id: meta.baseline_run_id || undefined,
       compares_best_to_baseline: meta.compares_best_to_baseline || undefined,
+      note: meta.note || undefined,
       reproducible_command: meta.reproducible_command || undefined,
       provenance: { dataset_hash: row.dataset_hash, code_hash: row.code_hash, seed: row.seed },
     }),
@@ -1348,29 +1664,72 @@ async function proxyAgentMessage(env, studyId, body) {
   }
 }
 
-/** Proxy the agent runtime's SSE event stream through to the cockpit (public). */
+/**
+ * Proxy the agent runtime's SSE event stream through to the cockpit (public).
+ *
+ * C9 robustness:
+ *  - Hop-by-hop `connection: keep-alive` is dropped (it's invalid on a fetch Response
+ *    and must not be forwarded by a proxy).
+ *  - A FINITE response (single frame, no live body) is always 200 so EventSource
+ *    LATCHES it and stops auto-reconnecting. We only stream the live upstream body when
+ *    upstream is a genuine `text/event-stream`.
+ *  - A non-OK upstream or a non-event-stream content-type yields a 200 `event: error`
+ *    frame (finite) instead of piping junk that would make the client reconnect-loop.
+ *  - When the study has reached a terminal state, emit an `event: done` frame.
+ */
 async function proxyAgentStream(env, studyId) {
+  // SSE response headers — note: NO `connection` header (hop-by-hop; dropped per C9).
   const sseHeaders = {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
-    connection: "keep-alive",
     ...CORS,
   };
+  // A finite SSE response: one or more frames, then EOF. 200 so the cockpit latches it.
+  const finite = (frames) => new Response(frames, { status: 200, headers: sseHeaders });
+  const frame = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+
+  // Is the study already in a terminal state? If so we can short-circuit with `done`.
+  let studyStatus = null;
+  try {
+    const row = await env.DB.prepare("SELECT status FROM study WHERE id = ?").bind(studyId).first();
+    studyStatus = row ? row.status : null;
+  } catch {
+    // Best-effort: a read failure here must not break the public stream.
+  }
+  const isFinished = studyStatus === "done" || studyStatus === "stopped";
+
   const base = (env.AGENT_RUNTIME_URL || "").replace(/\/$/, "");
   if (!base) {
-    // No runtime configured — emit one informational event and close so the
-    // cockpit renders a clean "runtime not connected" state instead of erroring.
-    const body = `event: info\ndata: ${JSON.stringify({ kind: "runtime_unavailable", study_id: studyId })}\n\n`;
-    return new Response(body, { headers: sseHeaders });
+    // No runtime configured — emit one informational (or done) frame and close so the
+    // cockpit renders a clean state instead of reconnecting forever.
+    if (isFinished) return finite(frame("done", { study_id: studyId, status: studyStatus }));
+    return finite(frame("info", { kind: "runtime_unavailable", study_id: studyId }));
   }
+
+  // A finished study needs no live upstream — emit a terminal `done` frame.
+  if (isFinished) return finite(frame("done", { study_id: studyId, status: studyStatus }));
+
   try {
     const upstream = await fetch(`${base}/agent/${encodeURIComponent(studyId)}/stream`, {
       headers: { accept: "text/event-stream" },
     });
-    return new Response(upstream.body, { status: upstream.status, headers: sseHeaders });
+    const ct = upstream.headers.get("content-type") || "";
+    if (!upstream.ok || !/text\/event-stream/i.test(ct)) {
+      // Upstream is unhealthy or not an event stream — return a FINITE error frame so
+      // EventSource stops reconnecting (a streamed non-200 would trigger a retry loop).
+      return finite(
+        frame("error", {
+          kind: "runtime_bad_stream",
+          status: upstream.status,
+          content_type: ct || null,
+        }),
+      );
+    }
+    // Healthy event stream — pipe the live body through (drop the upstream status/headers,
+    // use our sanitized SSE headers; 200 keeps the connection semantics clean).
+    return new Response(upstream.body, { status: 200, headers: sseHeaders });
   } catch (e) {
-    const body = `event: error\ndata: ${JSON.stringify({ kind: "runtime_unreachable", detail: String(e?.message ?? e) })}\n\n`;
-    return new Response(body, { headers: sseHeaders });
+    return finite(frame("error", { kind: "runtime_unreachable", detail: String(e?.message ?? e) }));
   }
 }
 
@@ -1384,13 +1743,14 @@ export default {
     const { pathname } = url;
     const method = request.method;
 
-    if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+    // Preflight: reflect the requested headers (CORS fix) so a custom client header
+    // never fails the preflight. Origin stays `*` (bearer-only API, no cookies).
+    if (method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
 
-    try {
-      await ensureSchema(env);
-    } catch (e) {
-      return serverError(env, "schema_error", e);
-    }
+    // Best-effort schema bootstrap. A transient DDL failure must NOT take down public
+    // reads — ensureSchema now resolves to false instead of throwing, and write paths
+    // separately call requireSchema() to hard-require the schema before mutating.
+    await ensureSchema(env);
 
     // Public landing page (the real cockpit is the front-end track's apps/cockpit).
     if (method === "GET" && pathname === "/") {
@@ -1418,12 +1778,28 @@ export default {
       if (rest.endsWith("/report")) {
         return getReport(env, rest.slice(0, -"/report".length), url);
       }
+      // C7 — GET /api/studies/{id}/grade is a pure READ (no mutation), so it is public
+      // and reuses the same gradeStudy logic as POST /api/grade.
+      if (rest.endsWith("/grade")) {
+        return gradeStudy(env, { study_id: rest.slice(0, -"/grade".length) });
+      }
       return getStudyDetail(env, rest);
     }
 
     // Writes require the internal token.
     if (pathname.startsWith("/api/")) {
+      // C10 — refuse writes when the SERVER token is missing or too short (<24 chars),
+      // with a clear 503 (vs an opaque 401). Reads above already returned; only write
+      // routes reach here. Never falls back to a hardcoded default token.
+      if (!serverTokenUsable(env)) return writesDisabled();
       if (!checkAuth(request, env)) return unauthorized();
+      // Writes mutate the ledger — hard-require the schema (best-effort bootstrap may
+      // have failed above without taking down reads). A real failure surfaces as 500.
+      try {
+        await requireSchema(env);
+      } catch (e) {
+        return serverError(env, "schema_error", e);
+      }
       let body = {};
       if (method === "POST") {
         body = await request.json().catch(() => null);
@@ -1477,9 +1853,12 @@ export default {
 };
 
 /**
- * Durable Object: one instance per study session. The cockpit (front-end track) can
- * open a WebSocket here for live ledger updates as runs complete. Kept minimal and
- * valid so the binding + migration deploy cleanly; the API above is the contract.
+ * Durable Object: RESERVED, not yet wired. The binding (env.STUDY) and the v1 migration
+ * are declared in wrangler.toml so the class deploys cleanly and a future live-update
+ * channel can attach without a breaking migration — but NOTHING currently instantiates
+ * this DO. Live cockpit updates today flow over the SSE proxy (GET .../stream), and the
+ * ledger is read via GET /api/studies/{id}. Do not remove the binding/migration (that
+ * would break the deploy); this stub is intentionally minimal until the channel lands.
  */
 export class StudySession {
   constructor(state, env) {

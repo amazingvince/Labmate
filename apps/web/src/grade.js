@@ -112,8 +112,10 @@ export function evaluateRubric(rubric, L) {
       return [runs.length > 0 && bad.length === 0, `${runs.length - bad.length}/${runs.length} runs carry rationale`];
     },
     feedback_affected_plan: () => {
-      const ok = manifests.some((m) => m.applied_feedback_id);
-      return [ok, ok ? "a manifest applied a human feedback constraint" : "no manifest references a feedback id"];
+      // C11 — a human feedback constraint shaped the plan if EITHER a manifest or a run
+      // carries an applied_feedback_id (runs persist it directly now).
+      const ok = manifests.some((m) => m.applied_feedback_id) || runs.some((r) => r.applied_feedback_id);
+      return [ok, ok ? "a run/manifest applied a human feedback constraint" : "no run or manifest references a feedback id"];
     },
     runs_queryable: () => [true, "query_runs supports metric, model_family, hypothesis, tags, and critique filters"],
 

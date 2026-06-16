@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS study (
   constraints_json TEXT,                      -- { primary_metric, guardrails[], banned_columns[], require_interpretability }
   budget_json     TEXT,                       -- { max_trials, budget_seconds }
   rubric          TEXT DEFAULT 'docs/rubric.json',
-  status          TEXT DEFAULT 'open',        -- open | done | stopped
+  status          TEXT DEFAULT 'open',        -- open | running | done | stopped
   created_at      TEXT NOT NULL
 );
 
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS hypothesis (
   model_family    TEXT,
   features_json   TEXT,
   expected_outcome TEXT,
-  status          TEXT DEFAULT 'proposed',    -- proposed | approved | rejected
+  status          TEXT DEFAULT 'proposed',    -- proposed | approved | tested | rejected
   created_at      TEXT NOT NULL
 );
 
@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS run (
   dataset_hash    TEXT,
   code_hash       TEXT,
   seed            INTEGER,
+  applied_feedback_id TEXT,                   -- which human feedback shaped this run (grade: feedback_affected_plan)
   created_at      TEXT NOT NULL
 );
 
