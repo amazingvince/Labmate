@@ -28,7 +28,7 @@ const AjvMod = require("ajv/dist/2020");
 const Ajv2020 = AjvMod.default || AjvMod;
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const TOKEN = "test-internal-token";
+const TOKEN = "dev-internal-token-0000000000000000";
 
 // ---------------------------------------------------------------------------
 // spec + schema validation (ajv against the OpenAPI response schemas)

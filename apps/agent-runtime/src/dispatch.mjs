@@ -50,13 +50,13 @@ export function deriveMetricGuardrail(constraints) {
   for (const g of candidates) {
     if (typeof g === "string") {
       const v = parseFprGuardrail(g);
-      if (v != null) out.maxFpr = v;
-    } else if (g && typeof g === "object" && g.false_positive_rate != null) {
+      if (v !== null && v !== undefined) out.maxFpr = v;
+    } else if (g && typeof g === "object" && g.false_positive_rate !== null && g.false_positive_rate !== undefined) {
       const v = Number(g.false_positive_rate);
       if (Number.isFinite(v)) out.maxFpr = v > 1 ? v / 100 : v;
     }
   }
-  if (out.maxFpr == null && constraints.max_fpr != null) {
+  if ((out.maxFpr === null || out.maxFpr === undefined) && constraints.max_fpr !== null && constraints.max_fpr !== undefined) {
     const v = Number(constraints.max_fpr);
     if (Number.isFinite(v)) out.maxFpr = v > 1 ? v / 100 : v;
   }
@@ -235,9 +235,9 @@ export function makeDispatcher(deps) {
       try {
         const study = await getStudy(manifest.study_id);
         const { maxFpr, primaryMetric } = deriveMetricGuardrail(study?.constraints);
-        if (maxFpr != null || primaryMetric) {
+        if ((maxFpr !== null && maxFpr !== undefined) || primaryMetric) {
           const metric = { ...(manifest.metric ?? {}) };
-          if (metric.max_fpr == null && maxFpr != null) metric.max_fpr = maxFpr;
+          if ((metric.max_fpr === null || metric.max_fpr === undefined) && maxFpr !== null && maxFpr !== undefined) metric.max_fpr = maxFpr;
           if (!metric.primary_metric && primaryMetric) metric.primary_metric = primaryMetric;
           manifest.metric = metric;
         }

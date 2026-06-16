@@ -1677,7 +1677,7 @@ async function proxyAgentMessage(env, studyId, body) {
  *    frame (finite) instead of piping junk that would make the client reconnect-loop.
  *  - When the study has reached a terminal state, emit an `event: done` frame.
  */
-async function proxyAgentStream(env, studyId) {
+async function proxyAgentStream(env, studyId, request) {
   // SSE response headers — note: NO `connection` header (hop-by-hop; dropped per C9).
   const sseHeaders = {
     "content-type": "text/event-stream",
@@ -1710,8 +1710,15 @@ async function proxyAgentStream(env, studyId) {
   if (isFinished) return finite(frame("done", { study_id: studyId, status: studyStatus }));
 
   try {
+    // Forward the client's Last-Event-ID upstream so the runtime replays only the
+    // frames AFTER it on reconnect (the runtime stamps a monotonic `id:` per frame and
+    // honors this header). Harmless when absent.
+    const lastEventId = request && request.headers ? request.headers.get("last-event-id") : null;
     const upstream = await fetch(`${base}/agent/${encodeURIComponent(studyId)}/stream`, {
-      headers: { accept: "text/event-stream" },
+      headers: {
+        accept: "text/event-stream",
+        ...(lastEventId ? { "last-event-id": lastEventId } : {}),
+      },
     });
     const ct = upstream.headers.get("content-type") || "";
     if (!upstream.ok || !/text\/event-stream/i.test(ct)) {
@@ -1771,7 +1778,7 @@ export default {
       // Live agent activity (SSE) — the control plane proxies the agent runtime's
       // event stream through to the cockpit. Public, like the other reads.
       if (rest.endsWith("/stream")) {
-        return proxyAgentStream(env, rest.slice(0, -"/stream".length));
+        return proxyAgentStream(env, rest.slice(0, -"/stream".length), request);
       }
       // Latest rendered model card. JSON by default (cockpit reads .markdown), or
       // raw text/markdown with ?format=md (downloadable / linkable).

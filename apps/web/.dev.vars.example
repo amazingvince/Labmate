@@ -2,7 +2,7 @@
 # These mirror the keys in the repo-root .env (see docs/ENV.md).
 
 # Shared bearer token the MCP server / cockpit send on write routes.
-LABMATE_INTERNAL_TOKEN = "replace-with-openssl-rand-hex-24"
+LABMATE_INTERNAL_TOKEN = "dev-internal-token-0000000000000000"
 
 # Deployed Modal runner endpoint (from `modal deploy apps/modal-runner/runner.py`).
 # Leave empty for read-only local work; launch_experiment returns 502 until it is set.
