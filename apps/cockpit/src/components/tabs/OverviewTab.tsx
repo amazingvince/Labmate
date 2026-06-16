@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/card'
 import { runsForHypothesis } from '@/lib/derive'
 import { BriefCard } from '@/components/study/BriefCard'
+import { ContractCard } from '@/components/study/ContractCard'
 import { ReadinessSummary } from '@/components/study/ReadinessRubric'
 import { FeedbackForm } from '@/components/study/FeedbackForm'
 import { splitRecommendation } from '@/components/study/RecommendationPanel'
@@ -123,6 +124,10 @@ export function OverviewTab({
           </CardContent>
         </Card>
       </div>
+
+      {/* The GENERATED per-study data + metric contract. Renders nothing when the
+          study carries no `contracts` (older rows / golden path). */}
+      <ContractCard dataset={detail.dataset_version} />
 
       <Card>
         <CardHeader>

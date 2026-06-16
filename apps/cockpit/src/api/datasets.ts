@@ -1,54 +1,35 @@
 /**
  * Types + client call for the dataset-upload route (`POST /api/datasets`).
  *
- * The OpenAPI generator (packages/api-types) does not cover this route yet, so
- * the shapes here are hand-written to match the Worker's `profileCsv` output in
- * `apps/web/src/profiles.js`. If that profiler changes, mirror it here.
+ * The profile shapes are the canonical ones from `@labmate/api-types`
+ * (generated from `apps/api-spec/openapi.yaml`, mirroring `profileCsv` in
+ * `apps/web/src/profiles.js`). We re-export them here so callers keep importing
+ * from `@/api/datasets`, but there is now a single source of truth — never
+ * hand-define these again.
  */
+import type { components } from '@labmate/api-types'
 import { API_BASE, HttpError } from './client'
 import { getApiToken } from './token'
 
+type Schemas = components['schemas']
+
+/** One profiled column (a row of `profile.columns`). */
+export type ProfileColumn = Schemas['ProfileColumn']
+
 /** dtype inferred per column by `profileCsv`. */
-export type ProfileDtype = 'numeric' | 'categorical' | 'datetime' | 'boolean' | 'text'
+export type ProfileDtype = ProfileColumn['dtype']
 
-/** One profiled column (matches a row of `profile.columns`). */
-export type ProfileColumn = {
-  name: string
-  dtype: ProfileDtype
-  /** Fraction missing in [0,1]. */
-  missing_fraction: number
-  /** Same as `missing_fraction * 100`, pre-rounded by the Worker. */
-  missing_pct: number
-  cardinality: number
-  n_unique: number
-  example_values: string[]
-  is_candidate_leakage: boolean
-  /** Present only when `is_candidate_leakage` is true. */
-  leakage_reason?: string
-}
+/** Suggested split strategy attached to the profile. Allows the `random` fallback. */
+export type ProfileSplit = Schemas['ProfileSplit']
 
-/** Suggested split strategy attached to the profile. */
-export type ProfileSplit = {
-  strategy: 'time_based' | 'random'
-  time_col?: string
-  ratios: number[]
-  seed: number
-}
-
-/** The `profile` object returned by `profileCsv`. */
-export type DatasetProfile = {
-  dataset_id: string
-  row_count: number
-  target: string | null
-  target_definition: string | null
-  leakage_candidates: string[]
-  safe_features: string[]
-  categorical_features: string[]
-  datetime_columns: string[]
-  split: ProfileSplit
-  columns: ProfileColumn[]
-  sampled: boolean
-}
+/**
+ * The `profile` object returned by `profileCsv`.
+ *
+ * Note: `categorical_features`, `datetime_columns`, `target_definition` and
+ * `sampled` are OPTIONAL in the canonical shape (the Worker omits them on an
+ * empty CSV / fresh upload). Read them defensively.
+ */
+export type DatasetProfile = Schemas['DatasetProfile']
 
 /** `POST /api/datasets` → 201 body. */
 export type UploadDatasetResponse = {
