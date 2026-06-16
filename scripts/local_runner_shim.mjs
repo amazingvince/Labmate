@@ -141,6 +141,25 @@ function mockResult(payload) {
   }
 
   const fprOk = fpr <= maxFpr + 1e-9;
+
+  // Drill-down context fields the cockpit's Context line renders (RunsTable.tsx):
+  //   "prevalence train X% / test Y%" and "tuned @ FPR {target_fpr} → threshold {threshold}".
+  // The real runner / live data emit these; emit them here too for demo fidelity.
+  // target_fpr is the declared guardrail ceiling (default 0.10). Because `fpr` above is
+  // always <= maxFpr, false_positive_rate <= target_fpr holds whenever fprOk is true.
+  const targetFpr = round(declared.max_fpr != null ? Number(declared.max_fpr) : 0.1);
+  // Deterministic operating threshold in (0,1), tied to the same seed/script jitter as the
+  // other monotonic metrics (no Math.random). Baselines (predict prior) sit near the class
+  // prior ~0.36; tuned models calibrate near 0.5. Small jitter keeps runs distinguishable.
+  const threshold = isBaseline
+    ? round(0.34 + 0.05 * scriptJitter) // ~0.34-0.39, near the positive prior
+    : round(0.45 + 0.1 * scriptJitter); // ~0.45-0.55, a calibrated operating point
+  // Plausible class prevalences (~36% positive), with a tiny deterministic train/test gap
+  // from a time-based split. prevalence_test stays consistent with the confusion matrix's
+  // ~35% positive test prevalence below.
+  const prevalenceTrain = round(0.362 + 0.01 * scriptJitter);
+  const prevalenceTest = round(0.35 + 0.008 * scriptJitter);
+
   const nRows = 12000;
   const nTrain = Math.round(nRows * 0.7);
   const nVal = Math.round(nRows * 0.15);
@@ -164,6 +183,10 @@ function mockResult(payload) {
       roc_auc: rocAuc,
       pr_auc: prAuc,
       brier,
+      target_fpr: targetFpr,
+      threshold,
+      prevalence_train: prevalenceTrain,
+      prevalence_test: prevalenceTest,
     },
     params: {
       model: family,
