@@ -49,7 +49,18 @@ export function evaluateRubric(rubric, L) {
       const ok = !!(study.brief && study.dataset_id && study.target && study.metric);
       return [ok, ok ? "study has brief, dataset, target, metric" : "study is missing core fields"];
     },
-    data_contract: () => [!!dv, dv ? `dataset version ${dv.id}` : "no data contract written"],
+    data_contract: () => {
+      // Generic (dataset-agnostic): a real data contract = a profiled dataset version
+      // with at least one column AND a recorded split strategy. Derived from the study
+      // config + profile, not from any hardcoded (sla_tickets) assumption.
+      const cols = (dv && dv.columns) || [];
+      const sp = dv && dv.split_strategy;
+      const ok = !!(dv && cols.length > 0 && sp && sp.strategy);
+      if (!dv) return [false, "no data contract written"];
+      if (!cols.length) return [false, `dataset version ${dv.id} has no columns profiled`];
+      if (!(sp && sp.strategy)) return [false, `dataset version ${dv.id} has no split strategy`];
+      return [ok, `dataset version ${dv.id}: ${cols.length} columns, ${sp.strategy} split`];
+    },
     five_experiments: () => [hypotheses.length >= 5, `${hypotheses.length} hypotheses proposed`],
     human_can_act: () => [feedback.length >= 1, `${feedback.length} feedback/approval events`],
     experiments_ran: () => [completed.length >= 5, `${completed.length} completed runs`],
@@ -80,8 +91,22 @@ export function evaluateRubric(rubric, L) {
       baselineRuns.length ? `${baselineRuns.length} baseline run(s)` : "no run tagged 'baseline'",
     ],
     target_metric_documented: () => {
-      const ok = !!(dv && dv.target_definition && study.metric_rationale);
-      return [ok, ok ? "target definition + metric rationale recorded" : "target definition or metric rationale missing"];
+      // Generic: the study documents its target and primary metric. A target is
+      // documented when the study names a target AND the profile observed that column
+      // (or carries an explicit definition); the metric is documented when the study
+      // names a metric AND gives a rationale for it. Works for any dataset, not just
+      // the bundled sla_tickets profile.
+      const cols = (dv && dv.columns) || [];
+      const targetNamed = !!study.target;
+      const targetInProfile = !!(dv && dv.target_definition) || cols.some((c) => c.name === study.target);
+      const metricDocumented = !!(study.metric && study.metric_rationale);
+      const ok = targetNamed && targetInProfile && metricDocumented;
+      const missing = [];
+      if (!targetNamed) missing.push("study target");
+      else if (!targetInProfile) missing.push("target not found in the dataset profile");
+      if (!study.metric) missing.push("primary metric");
+      if (!study.metric_rationale) missing.push("metric rationale");
+      return [ok, ok ? "target documented + primary metric with rationale recorded" : `missing: ${missing.join(", ")}`];
     },
     leakage_review_before_training: () => {
       const leakageCrits = critiques.filter((c) => c.kind === "leakage");

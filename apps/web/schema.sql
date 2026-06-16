@@ -23,6 +23,21 @@ CREATE TABLE IF NOT EXISTS study (
   created_at      TEXT NOT NULL
 );
 
+-- Catalog of UPLOADED datasets (POST /api/datasets). Distinct from dataset_version,
+-- which is the per-study profiled data contract. A `dataset` row records the CSV's
+-- content hash + cached real-profiling result so a study can attach to it by
+-- dataset_id. The bundled `sla_tickets` golden path needs no row here.
+CREATE TABLE IF NOT EXISTS dataset (
+  id              TEXT PRIMARY KEY,           -- dataset_<ulid> or a caller-supplied id
+  source          TEXT,                       -- 'uploaded' | 'bundled'
+  content_hash    TEXT,                       -- sha256 of the raw CSV bytes
+  row_count       INTEGER,                    -- rows observed (sampled, capped)
+  target          TEXT,                       -- optional target hint used for leakage scoring
+  profile_json    TEXT,                       -- cached profileCsv() result
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT
+);
+
 CREATE TABLE IF NOT EXISTS dataset_version (
   id              TEXT PRIMARY KEY,           -- ds_<ulid>
   study_id        TEXT NOT NULL REFERENCES study(id),

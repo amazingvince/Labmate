@@ -29,7 +29,7 @@
 
 import rubric from "../../../docs/rubric.json";
 import schemaSQL from "../schema.sql";
-import { profileFor, hypothesisLibrary } from "./profiles.js";
+import { profileFor, profileCsv, hypothesisLibrary } from "./profiles.js";
 import { evaluateRubric } from "./grade.js";
 
 // ---------------------------------------------------------------------------
@@ -583,19 +583,131 @@ async function serveDataset(env, name) {
   });
 }
 
+/**
+ * Upload a dataset CSV (token-gated write). Accepts either a raw `text/csv` request
+ * body or JSON `{ dataset_id?, csv }`. Stores the CSV to R2 at datasets/{dataset_id}.csv,
+ * upserts a row in the `dataset` catalog (id, content hash, row count, profile), and
+ * returns `{ dataset_id, profile }`. Idempotent on a given dataset_id (re-upload
+ * overwrites the R2 object and updates the catalog row). The profile is the REAL
+ * profiling result (profileCsv) — a target may be supplied to drive the leakage
+ * separation heuristic, but is optional (name-pattern leakage still applies).
+ */
+async function uploadDataset(env, _body, request) {
+  const ct = (request.headers.get("content-type") || "").toLowerCase();
+  const qs = new URL(request.url).searchParams;
+  let csv;
+  let datasetId = qs.get("dataset_id") || null;
+  let target = qs.get("target") || null;
+  if (ct.includes("application/json")) {
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body.csv !== "string") {
+      return fail(400, "bad_request", "Provide a CSV via a text/csv body or JSON { csv }.");
+    }
+    csv = body.csv;
+    datasetId = body.dataset_id || datasetId;
+    target = body.target || target;
+  } else {
+    // Raw text/csv (or text/plain) body; dataset_id/target come from the query string.
+    csv = await request.text();
+  }
+  if (typeof csv !== "string" || csv.trim().length === 0) {
+    return fail(400, "bad_request", "CSV body is empty.");
+  }
+  // Assign an id if none was given; sanitize a provided one to a flat, R2-safe key.
+  if (datasetId) {
+    datasetId = String(datasetId).replace(/[^a-zA-Z0-9._-]/g, "");
+    if (!datasetId) return fail(400, "bad_request", "dataset_id contains no usable characters.");
+  } else {
+    datasetId = newId("dataset");
+  }
+
+  const profile = profileCsv(csv, { target, datasetId });
+  if (!profile.columns.length) {
+    return fail(400, "bad_request", "Could not parse any columns from the CSV.");
+  }
+  const contentHash = await sha256hex(csv);
+
+  if (env.ARTIFACTS) {
+    await env.ARTIFACTS.put(`datasets/${datasetId}.csv`, csv, {
+      httpMetadata: { contentType: "text/csv" },
+    });
+  }
+
+  // Upsert the catalog row (idempotent on dataset_id). ensureSchema created `dataset`.
+  const now = nowIso();
+  await env.DB.prepare(
+    `INSERT INTO dataset (id, source, content_hash, row_count, target, profile_json, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO UPDATE SET
+       content_hash = excluded.content_hash,
+       row_count    = excluded.row_count,
+       target       = excluded.target,
+       profile_json = excluded.profile_json,
+       updated_at   = excluded.updated_at`,
+  )
+    .bind(
+      datasetId,
+      "uploaded",
+      contentHash,
+      profile.row_count,
+      target,
+      JSON.stringify(profile),
+      now,
+      now,
+    )
+    .run();
+
+  return json({ dataset_id: datasetId, profile }, 201);
+}
+
+/**
+ * Resolve a dataset profile for a study. Priority:
+ *   1. an uploaded CSV in R2 at datasets/{dataset_id}.csv → REAL profiling (profileCsv);
+ *   2. a bundled known dataset (e.g. sla_tickets) with no uploaded CSV → the committed
+ *      golden profile, so the demo stays deterministic and offline;
+ *   3. otherwise the minimal generic profile.
+ * Returns { profile, fileHash } where fileHash hashes the actual CSV bytes when one was
+ * read, else the structural profile (unchanged for the bundled golden path).
+ */
+async function resolveProfile(env, study) {
+  const safe = String(study.dataset_id).replace(/[^a-zA-Z0-9._-]/g, "");
+  let csvText = null;
+  if (safe && env.ARTIFACTS) {
+    try {
+      const obj = await env.ARTIFACTS.get(`datasets/${safe}.csv`);
+      if (obj) csvText = await obj.text();
+    } catch {
+      // R2 miss / unbound — fall through to the bundled or generic profile.
+    }
+  }
+  if (csvText !== null) {
+    const profile = profileCsv(csvText, { target: study.target, datasetId: study.dataset_id });
+    // Carry a real target definition over from the bundled known-good profile when it
+    // matches (keeps the golden path's documented definition even if re-uploaded).
+    const known = profileFor(study.dataset_id, study.target);
+    if (!profile.target_definition && known.target === study.target && known.target_definition) {
+      profile.target_definition = known.target_definition;
+    }
+    const fileHash = await sha256hex(csvText);
+    return { profile, fileHash };
+  }
+  const profile = profileFor(study.dataset_id, study.target);
+  const fileHash = await sha256hex(
+    JSON.stringify({ d: profile.dataset_id, n: profile.row_count, c: profile.columns, s: profile.split }),
+  );
+  return { profile, fileHash };
+}
+
 async function profileDataset(env, body) {
   const studyRow = await getStudyRow(env, body.study_id);
   if (!studyRow) return notFound(`No study ${body.study_id}`);
   const study = mapStudy(studyRow);
-  const profile = profileFor(study.dataset_id, study.target);
+  const { profile, fileHash } = await resolveProfile(env, study);
   const constraints = parse(studyRow.constraints_json) || {};
   const leakage = profile.leakage_candidates || [];
   const banned = [...new Set([...(constraints.banned_columns || []), ...leakage])];
   const split = profile.split;
 
-  const fileHash = await sha256hex(
-    JSON.stringify({ d: profile.dataset_id, n: profile.row_count, c: profile.columns, s: split }),
-  );
   const id = newId("ds");
   const created = nowIso();
   await env.DB.prepare(
@@ -1807,6 +1919,17 @@ export default {
       } catch (e) {
         return serverError(env, "schema_error", e);
       }
+      // Dataset upload accepts a RAW text/csv body (not JSON), so it is dispatched
+      // before the generic JSON parse below consumes the request stream. JSON
+      // { csv, dataset_id? } is also accepted (uploadDataset re-reads the body).
+      if (method === "POST" && pathname === "/api/datasets") {
+        try {
+          return await uploadDataset(env, null, request);
+        } catch (e) {
+          return serverError(env, "internal_error", e);
+        }
+      }
+
       let body = {};
       if (method === "POST") {
         body = await request.json().catch(() => null);
