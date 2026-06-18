@@ -504,7 +504,7 @@ function recommendation(L) {
 // route handlers
 // ---------------------------------------------------------------------------
 
-async function createStudy(env, body) {
+async function createStudy(env, body, ctx) {
   for (const k of ["brief", "dataset_id", "target", "metric"]) {
     if (!body || !body[k]) return fail(400, "bad_request", `Missing required field: ${k}`);
   }
@@ -534,11 +534,12 @@ async function createStudy(env, body) {
       nowIso(),
     )
     .run();
-  // Best-effort: kick the agent runtime to start a Managed Agents session for this
-  // study. Fire-and-forget — never block or fail study creation on it. The SSE
-  // stream route (GET /api/studies/{id}/stream) also starts the study on first
-  // subscribe, so a dropped trigger self-heals when the cockpit connects.
-  triggerAgentStart(env, id);
+  // Kick the agent runtime to start a Managed Agents session for this study. We do
+  // NOT block the create response on the runtime being up — but the kick MUST still
+  // run after we return. In a Cloudflare Worker a bare un-awaited fetch is killed the
+  // moment this handler's response resolves, so the kick is registered with
+  // ctx.waitUntil(...) (see triggerAgentStart) to keep it alive past the response.
+  triggerAgentStart(env, id, ctx);
   return json({ id, status: "open" }, 201);
 }
 
@@ -2041,16 +2042,67 @@ async function gradeStudy(env, body) {
 // agent runtime bridge
 // ---------------------------------------------------------------------------
 
-/** Fire-and-forget: ask the agent runtime to start a session for this study. */
-function triggerAgentStart(env, studyId) {
+/**
+ * Ask the agent runtime to start a session for this study — RELIABLY.
+ *
+ * Why this is not a bare `fetch(...).catch(() => {})`: in a Cloudflare Worker an
+ * un-awaited fetch is cancelled the instant the request handler's Response resolves,
+ * so a fire-and-forget kick frequently never reaches the runtime → the study never
+ * starts (a race). To guarantee the kick runs without blocking the create response we
+ * register the work with `ctx.waitUntil(...)`, which keeps it alive after we return.
+ *
+ * The kick itself is hardened with a short per-attempt timeout and a bounded retry so a
+ * transient runtime hiccup (cold start, brief 5xx, dropped connection) doesn't
+ * permanently drop the kick. The runtime's /agent/start is idempotent and re-kickable
+ * for a dead session, so retries are safe.
+ *
+ * Returns the (resolved-on-completion) promise so callers/tests can await it. When no
+ * runtime is wired (AGENT_RUNTIME_URL empty, e.g. the contract-test env) it skips
+ * silently and resolves immediately.
+ */
+function triggerAgentStart(env, studyId, ctx) {
   const base = (env.AGENT_RUNTIME_URL || "").replace(/\/$/, "");
-  if (!base) return; // no runtime wired (e.g. contract-test env) — skip silently
-  // Not awaited: study creation must not depend on the runtime being up.
-  fetch(`${base}/agent/start`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ study_id: studyId }),
-  }).catch(() => {});
+  if (!base) return Promise.resolve(); // no runtime wired — skip silently
+
+  const ATTEMPTS = 2; // total attempts (1 initial + 1 retry)
+  const TIMEOUT_MS = 5000; // per-attempt cap so a hung runtime can't pin the kick
+  const BACKOFF_MS = 250; // short backoff between attempts
+
+  const kick = (async () => {
+    for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+      // AbortController gives each attempt a bounded lifetime; a hung connection is
+      // aborted and treated as a failed attempt (retried if any remain).
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+      try {
+        const res = await fetch(`${base}/agent/start`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ study_id: studyId }),
+          signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+        // 2xx (incl. the runtime's 202 "started") means the kick landed — done.
+        if (res.ok) return;
+        // A 5xx is transient (cold start, restart) — retry. A 4xx is a permanent
+        // client error (bad request); retrying won't help, so stop.
+        if (res.status < 500) return;
+      } catch {
+        clearTimeout(timer);
+        // Network error / abort — fall through to retry if attempts remain.
+      }
+      if (attempt < ATTEMPTS) await new Promise((r) => setTimeout(r, BACKOFF_MS));
+    }
+    // Exhausted attempts: the SSE stream route (GET /api/studies/{id}/stream)
+    // historically self-healed by starting on subscribe; that is no longer the kick
+    // path, but a human re-open / a re-kick still recovers. We swallow rather than
+    // throw so waitUntil doesn't log an unhandled rejection.
+  })();
+
+  // Keep the kick alive past the response. ctx may be absent in some embeddings/tests;
+  // fall back to returning the promise (caller can await) without crashing.
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(kick);
+  return kick;
 }
 
 /**
@@ -2157,7 +2209,7 @@ async function proxyAgentStream(env, studyId, request) {
 // ---------------------------------------------------------------------------
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const { pathname } = url;
     const method = request.method;
@@ -2249,7 +2301,7 @@ export default {
       try {
         switch (`${method} ${pathname}`) {
           case "POST /api/studies":
-            return await createStudy(env, body);
+            return await createStudy(env, body, ctx);
           case "POST /api/profile":
             return await profileDataset(env, body);
           case "POST /api/experiments/propose":

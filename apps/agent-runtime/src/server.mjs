@@ -32,12 +32,23 @@
  * container — the registry below is per-process in-memory state.
  */
 import http from "node:http";
+import { pathToFileURL } from "node:url";
 import { config, assertRuntimeConfig } from "./config.mjs";
-import * as sdk from "./anthropic.mjs";
 import { makeControlPlaneClient } from "./controlplane.mjs";
 import { makeDispatcher } from "./dispatch.mjs";
 import { runStudyLoop } from "./loop.mjs";
 import { fetchStudyConstraints, formatContractReminder, constraintsSignature } from "./constraints.mjs";
+
+// The Anthropic SDK adapter is loaded LAZILY (dynamic import) the first time a live
+// session actually drives a tool call or a guidance inject — never at module import.
+// This keeps the registry/lifecycle logic (startStudy, finishStudy) importable for unit
+// tests without the @anthropic-ai/sdk package present, while production behavior is
+// unchanged (the adapter is loaded on the first real request, then cached).
+let _sdkPromise = null;
+function loadSdk() {
+  if (!_sdkPromise) _sdkPromise = import("./anthropic.mjs");
+  return _sdkPromise;
+}
 
 // Terminal event kinds: when one is emitted, the loop is over. These MATCH the
 // cockpit's TERMINAL set (useAgentStream) so EventSource stops reconnecting.
@@ -106,27 +117,49 @@ function finishStudy(studyId) {
   if (entry.gcTimer.unref) entry.gcTimer.unref();
 }
 
-/** Adapter the loop uses; real SDK here, swapped for a stub in tests. */
+/** Adapter the loop uses; real SDK here, swapped for a stub in tests. The SDK is
+ *  dynamically imported on first use (loadSdk) so importing this module never requires
+ *  the @anthropic-ai/sdk package. Each method forwards to the loaded SDK. */
 function realAgentAdapter() {
   return {
-    createSession: sdk.createSession,
-    sendUserMessage: sdk.sendUserMessage,
-    sendToolResult: sdk.sendToolResult,
-    streamEvents: sdk.streamEvents,
-    // getOutcome: sdk.getOutcome, // wire when the Outcomes preview is enabled
+    createSession: async (...a) => (await loadSdk()).createSession(...a),
+    sendUserMessage: async (...a) => (await loadSdk()).sendUserMessage(...a),
+    sendToolResult: async (...a) => (await loadSdk()).sendToolResult(...a),
+    // streamEvents is an async generator — delegate so the iterator protocol is preserved.
+    streamEvents: async function* (...a) {
+      const sdk = await loadSdk();
+      yield* sdk.streamEvents(...a);
+    },
+    // getOutcome: (...) => loadSdk().getOutcome(...), // wire when Outcomes is enabled
   };
 }
 
 /**
  * Start (or no-op return) a study's session + loop. EXPLICIT only — called by
- * POST /agent/start, never as a side effect of GET /stream. Idempotent: a second
- * call while the first is active returns the same entry instead of re-kicking.
+ * POST /agent/start, never as a side effect of GET /stream.
+ *
+ * Idempotent against a *genuinely active* session: a second call while the first loop
+ * is still running returns the same entry instead of re-kicking. But a study whose
+ * session already DIED must be RE-KICKABLE — otherwise a study that failed to start
+ * (or whose loop crashed) could never be retried, because the stale registry entry
+ * would forever dedupe the re-kick into a no-op. So if there is no entry, OR the
+ * existing entry is inactive (its loop ended / emitted a terminal frame — see
+ * finishStudy, which sets active=false), we drop the stale entry and start fresh.
  */
-function startStudy(studyId) {
+function startStudy(studyId, deps = {}) {
+  // Seams (production defaults). Tests inject a stub loop runner / control plane so the
+  // re-kick / dedup logic can be exercised without the Anthropic SDK or the network.
+  const runLoop = deps.runLoop ?? runStudyLoop;
+  const makeControlPlane = deps.makeControlPlane ?? makeControlPlaneClient;
+  const makeAgent = deps.makeAgent ?? realAgentAdapter;
+
   const existing = studies.get(studyId);
+  // Only a live, active session dedupes the kick. A finished/crashed entry (active
+  // false, possibly still inside its GC grace window with a buffered tail) is stale —
+  // fall through and replace it so the re-kick actually starts a new session.
   if (existing && existing.active) return existing; // already running — never re-kick
 
-  const controlPlane = makeControlPlaneClient();
+  const controlPlane = makeControlPlane();
   // Shared between the server's /message handler and the loop's nudge: the signature of
   // the LAST contract we surfaced to the LLM, so neither re-announces an unchanged
   // contract — but a change (from either inject path or out-of-band /api/feedback) does
@@ -143,8 +176,23 @@ function startStudy(studyId) {
     heartbeats: new Map(),
     gcTimer: null,
   };
-  // Replace any stale (finished) entry, cancelling its pending GC.
-  if (existing?.gcTimer) clearTimeout(existing.gcTimer);
+  // Replace any stale (finished) entry, cancelling its pending GC and reaping any
+  // resources that outlived its terminal frame. finishStudy normally clears these on
+  // the terminal frame, but a re-kick can race ahead of GC — drop them defensively so
+  // the dead entry leaves nothing behind before the fresh entry takes the slot.
+  if (existing) {
+    if (existing.gcTimer) clearTimeout(existing.gcTimer);
+    for (const hb of existing.heartbeats?.values?.() ?? []) clearInterval(hb);
+    existing.heartbeats?.clear?.();
+    for (const res of existing.subscribers ?? []) {
+      try {
+        res.end();
+      } catch {
+        /* already closed */
+      }
+    }
+    existing.subscribers?.clear?.();
+  }
   studies.set(studyId, entry);
 
   const modal = { url: config.modalRunnerUrl() };
@@ -173,9 +221,9 @@ function startStudy(studyId) {
 
   // Fire-and-forget the loop; it runs until done or the session ends. The loop is
   // contracted to emit exactly one terminal frame, which drives finishStudy() above.
-  runStudyLoop({
+  runLoop({
     studyId,
-    agent: realAgentAdapter(),
+    agent: makeAgent(),
     dispatcher,
     controlPlane,
     emit,
@@ -343,6 +391,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
+      const sdk = await loadSdk();
       await sdk.sendUserMessage(entry.sessionId, injected);
     } catch (e) {
       return send(res, 502, { error: "guidance_send_failed", detail: String(e?.message ?? e) });
@@ -355,6 +404,17 @@ const server = http.createServer(async (req, res) => {
   return send(res, 404, { error: "not_found" });
 });
 
-server.listen(config.port, () => {
-  console.info(`Labmate agent runtime listening on :${config.port}`);
-});
+// Only bind a port when run as the entry point (node src/server.mjs — the dev/start
+// scripts and the Modal container). When this module is IMPORTED (e.g. by a unit test
+// exercising startStudy's re-kick/dedup logic), do not listen — just expose the
+// registry helpers below. This keeps production launch behavior identical.
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  server.listen(config.port, () => {
+    console.info(`Labmate agent runtime listening on :${config.port}`);
+  });
+}
+
+// Exported for tests (the registry + lifecycle). Not part of the HTTP/SSE wire
+// contract — production talks to this module over HTTP, not these symbols.
+export { startStudy, finishStudy, studies, server };
