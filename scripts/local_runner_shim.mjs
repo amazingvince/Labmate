@@ -183,6 +183,13 @@ function mockResult(payload) {
       roc_auc: rocAuc,
       pr_auc: prAuc,
       brier,
+      // Echo the FPR BOUND the Worker actually sent us (study.constraints → declared.max_fpr)
+      // into metrics so it is OBSERVABLE per run. It is a number, so it survives the Worker's
+      // numbers-only metric filter (numbersOnly) and lands on run.metrics.max_fpr — letting a
+      // reader (and the e2e driver) see the guardrail that was IN FORCE when this run launched.
+      // This is the observable proof that human feedback ("tighten FPR to 0.10") causally
+      // changed the enforced contract: pre-feedback runs report 0.20, post-feedback runs 0.10.
+      max_fpr: maxFpr,
       target_fpr: targetFpr,
       threshold,
       prevalence_train: prevalenceTrain,
