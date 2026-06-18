@@ -37,6 +37,7 @@ import * as sdk from "./anthropic.mjs";
 import { makeControlPlaneClient } from "./controlplane.mjs";
 import { makeDispatcher } from "./dispatch.mjs";
 import { runStudyLoop } from "./loop.mjs";
+import { fetchStudyConstraints, formatContractReminder, constraintsSignature } from "./constraints.mjs";
 
 // Terminal event kinds: when one is emitted, the loop is over. These MATCH the
 // cockpit's TERMINAL set (useAgentStream) so EventSource stops reconnecting.
@@ -126,6 +127,11 @@ function startStudy(studyId) {
   if (existing && existing.active) return existing; // already running — never re-kick
 
   const controlPlane = makeControlPlaneClient();
+  // Shared between the server's /message handler and the loop's nudge: the signature of
+  // the LAST contract we surfaced to the LLM, so neither re-announces an unchanged
+  // contract — but a change (from either inject path or out-of-band /api/feedback) does
+  // reach the model exactly once on the next opportunity.
+  const constraintTracker = { lastSig: "" };
   const entry = {
     subscribers: new Set(),
     buffer: [],
@@ -133,6 +139,7 @@ function startStudy(studyId) {
     sessionId: null,
     active: true,
     controlPlane,
+    constraintTracker,
     heartbeats: new Map(),
     gcTimer: null,
   };
@@ -178,6 +185,7 @@ function startStudy(studyId) {
       maxToolCalls: config.maxToolCallsPerSession,
       maxSessionSeconds: config.maxSessionSeconds,
       outcomesEnabled: config.outcomesEnabled,
+      constraintTracker,
     },
   })
     .then((r) => {
@@ -297,27 +305,50 @@ const server = http.createServer(async (req, res) => {
     if (!entry.sessionId) return send(res, 409, { error: "session_not_ready" });
     if (!body.text) return send(res, 400, { error: "text required" });
 
-    try {
-      await sdk.sendUserMessage(entry.sessionId, `[human guidance] ${body.text}`);
-    } catch (e) {
-      return send(res, 502, { error: "guidance_send_failed", detail: String(e?.message ?? e) });
-    }
-    emitter(studyId)({ kind: "human.guidance", study_id: studyId, text: body.text });
-
-    // C1 — also record the guidance to the control plane as type:'human_feedback'
+    // C1 — FIRST record the guidance to the control plane as type:'human_feedback'
     // (NOT 'approval'): that's the type the Worker's NL parser inspects to extract
-    // structured constraints (primary_metric / FPR guardrail), which later experiments
-    // then apply. Best-effort: never fail the inject on a feedback write hiccup.
+    // structured constraints (primary_metric / FPR guardrail / banned columns) and
+    // CAUSALLY mutate study.constraints. We record BEFORE injecting so the reminder we
+    // hand the model below reflects the just-applied contract. Best-effort: never fail
+    // the inject on a feedback write hiccup.
+    let constraintsChanged = false;
     try {
-      await entry.controlPlane.post("/api/feedback", {
+      const fb = await entry.controlPlane.post("/api/feedback", {
         study_id: studyId,
         type: "human_feedback",
         scope: "study",
         content: body.text,
       });
+      constraintsChanged = Boolean(fb && !fb.error && fb.constraints_changed);
     } catch {
-      /* the guidance still reached the agent session; feedback log is best-effort */
+      /* the guidance still reaches the agent session; feedback log is best-effort */
     }
+
+    // Re-surface the CURRENT enforced contract to the LLM along with the human's note,
+    // so it RE-PLANS toward the (possibly tightened) bound instead of only learning of
+    // the change when a launch is rejected. Fetch is best-effort; on any failure we just
+    // inject the raw note (the prior behavior). The signature is recorded so the loop's
+    // periodic nudge doesn't redundantly re-announce the same contract.
+    let injected = `[human guidance] ${body.text}`;
+    try {
+      const constraints = await fetchStudyConstraints(entry.controlPlane, studyId);
+      const reminder = formatContractReminder(constraints);
+      if (reminder) {
+        injected += `\n${reminder}`;
+        // Record what we just surfaced so the loop's nudge won't re-announce it.
+        if (entry.constraintTracker) entry.constraintTracker.lastSig = constraintsSignature(constraints);
+      }
+    } catch {
+      /* awareness reminder is best-effort; never block the human's guidance */
+    }
+
+    try {
+      await sdk.sendUserMessage(entry.sessionId, injected);
+    } catch (e) {
+      return send(res, 502, { error: "guidance_send_failed", detail: String(e?.message ?? e) });
+    }
+    emitter(studyId)({ kind: "human.guidance", study_id: studyId, text: body.text, constraints_changed: constraintsChanged });
+
     return send(res, 202, { status: "queued" });
   }
 

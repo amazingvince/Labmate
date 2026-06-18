@@ -16,6 +16,8 @@
  * smoke test drive the whole thing with zero network.
  */
 
+import { fetchStudyConstraints, formatContractReminder, constraintsSignature } from "./constraints.mjs";
+
 /**
  * @param {object} o
  * @param {string} o.studyId
@@ -23,7 +25,7 @@
  * @param {object} o.dispatcher from makeDispatcher()
  * @param {object} o.controlPlane control-plane client (for the done check)
  * @param {(evt: object) => void} [o.emit] called for every event worth showing the human
- * @param {object} [o.opts]      { agentId, environmentId, maxToolCalls, outcomesEnabled, brief }
+ * @param {object} [o.opts]      { agentId, environmentId, maxToolCalls, outcomesEnabled, brief, constraintTracker }
  */
 export async function runStudyLoop({ studyId, agent, dispatcher, controlPlane, emit = () => {}, opts = {} }) {
   const {
@@ -33,6 +35,11 @@ export async function runStudyLoop({ studyId, agent, dispatcher, controlPlane, e
     maxSessionSeconds = 1800,
     outcomesEnabled = false,
     brief, // { text } — the message that kicks off the work
+    // Shared with server.mjs's /message handler: { lastSig } — the signature of the
+    // last contract surfaced to the LLM. The nudge re-announces the CURRENT contract
+    // only when it CHANGED since then, so out-of-band /api/feedback (which mutated
+    // study.constraints) becomes visible without spamming an unchanged contract.
+    constraintTracker = { lastSig: "" },
   } = opts;
 
   // Session wall-clock budget (enforced below) — captured before any network call so
@@ -52,6 +59,30 @@ export async function runStudyLoop({ studyId, agent, dispatcher, controlPlane, e
     if (terminalEmitted) return;
     terminalEmitted = true;
     emit({ kind, study_id: studyId, ...extra });
+  }
+
+  /**
+   * Re-fetch the study's CURRENT constraints and, if they CHANGED since we last
+   * surfaced them (tracked across server.mjs's /message inject and this nudge), return
+   * one compact reminder line to append to the nudge — so the LLM re-plans toward the
+   * new bound even when the human's feedback arrived out-of-band via /api/feedback.
+   * Best-effort and cheap (one GET, guarded); returns "" when nothing changed or the
+   * fetch fails, so the nudge text is unchanged in the common case.
+   * @returns {Promise<string>} the reminder line (with leading newline) or ""
+   */
+  async function contractReminderIfChanged() {
+    try {
+      const constraints = await fetchStudyConstraints(controlPlane, studyId);
+      const reminder = formatContractReminder(constraints);
+      if (!reminder) return "";
+      const sig = constraintsSignature(constraints);
+      if (sig && sig === constraintTracker.lastSig) return ""; // already surfaced — don't spam
+      constraintTracker.lastSig = sig;
+      emit({ kind: "constraints.refreshed", study_id: studyId, reminder });
+      return `\n${reminder}`;
+    } catch {
+      return ""; // never let awareness break the loop
+    }
   }
 
   let sessionId;
@@ -213,11 +244,16 @@ export async function runStudyLoop({ studyId, agent, dispatcher, controlPlane, e
           reason = "graded_done";
           break;
         }
+        // Surface the CURRENT enforced contract if a human changed it since we last
+        // told the model (incl. out-of-band /api/feedback that mutated study.constraints),
+        // so the next step is planned toward the new bound — not discovered via a 422.
+        const contractLine = await contractReminderIfChanged();
         await agent.sendUserMessage(
           sessionId,
           "Review the latest runs with query_runs. If an experiment beat the baseline " +
             "and survives a leakage/calibration check, promote it and write_report. " +
-            "Otherwise propose the next experiment (request approval first) or stop.",
+            "Otherwise propose the next experiment (request approval first) or stop." +
+            contractLine,
         );
         emit({ kind: "nudge", study_id: studyId });
         continue;
