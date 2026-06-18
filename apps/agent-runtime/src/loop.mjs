@@ -165,133 +165,255 @@ export async function runStudyLoop({ studyId, agent, dispatcher, controlPlane, e
 
   // `reason` records WHY the loop ended, surfaced on the terminal frame.
   let reason = "stream_ended";
-  try {
-    for await (const event of agent.streamEvents(sessionId)) {
-      // Session wall-clock budget: enforced on every event (and again after the loop).
-      // A breach emits ONE terminal frame and breaks — it never hangs to the SSE idle
-      // timeout. We nudge the agent first so a clean transcript ends with a note.
-      if (overDeadline()) {
-        try {
-          await agent.sendUserMessage(
-            sessionId,
-            "Session time budget reached. Stop now; do not start new experiments.",
-          );
-        } catch {
-          /* best-effort note; we are terminating regardless */
+
+  /**
+   * Push the agent to take the next step. Re-surfaces the CURRENT enforced contract if
+   * a human changed it since we last told the model, then sends the actionable
+   * "keep going" directive and emits a nudge frame. Shared by the mid-stream idle path
+   * and the OUTER re-stream below — so production (where the turn-end simply CLOSES the
+   * stream and no idle event ever arrives) is self-driven to completion with NO external
+   * nudger. Throws only if the underlying send fails (the caller treats that as terminal).
+   */
+  async function sendContinuationNudge() {
+    // Surface the CURRENT enforced contract if a human changed it since we last told the
+    // model (incl. out-of-band /api/feedback that mutated study.constraints), so the next
+    // step is planned toward the new bound — not discovered via a 422.
+    const contractLine = await contractReminderIfChanged();
+    await agent.sendUserMessage(
+      sessionId,
+      "Review the latest runs with query_runs, then CONTINUE the study to completion. " +
+        "If you have not yet: run the leakage review, launch the baseline, then the tuned " +
+        "experiments — request approval before each launch (approvals auto-grant within " +
+        "budget). Critique each result, record the promote/reject decision, then call " +
+        "write_report. If an experiment beat the baseline and survives a leakage/" +
+        "calibration check, promote it and write_report. Do not stop until the study is " +
+        "graded done; keep going step by step." +
+        contractLine,
+    );
+    emit({ kind: "nudge", study_id: studyId });
+  }
+
+  /**
+   * One full pass over `agent.streamEvents(sessionId)`. Returns WHY the pass ended:
+   *   "done"         — graded done (sets the outer `done` flag too); stop.
+   *   "deadline"     — session wall-clock budget reached mid-stream; stop.
+   *   "session_error"/"stream_failed" — terminal; the terminal frame is ALREADY emitted
+   *                    here, so the outer loop must NOT emit another; stop.
+   *   "session.*"/"completed" — an explicit terminal session state arrived; stop.
+   *   "stream_ended" — the stream closed cleanly with no `done` (the production turn-end
+   *                    `end_turn` close). The OUTER loop re-streams after a nudge.
+   *
+   * All in-stream handling (narration, tool dispatch, the requires_action sweep, the
+   * mid-stream idle nudge, errors, terminal states) is preserved exactly as before.
+   */
+  async function streamOnce() {
+    try {
+      for await (const event of agent.streamEvents(sessionId)) {
+        // Session wall-clock budget: enforced on every event (and again in the outer
+        // loop). A breach nudges the agent to stop and returns "deadline" — it never
+        // hangs to the SSE idle timeout.
+        if (overDeadline()) {
+          try {
+            await agent.sendUserMessage(
+              sessionId,
+              "Session time budget reached. Stop now; do not start new experiments.",
+            );
+          } catch {
+            /* best-effort note; we are terminating regardless */
+          }
+          return "deadline";
         }
+
+        const type = event.type ?? event.event ?? "";
+
+        // 1. Surface assistant narration to the cockpit. `agent.*` are the live
+        // managed-agents shapes; `assistant.*`/`message` tolerate older builds/tests.
+        if (
+          type === "agent.message" ||
+          type === "agent.thinking" ||
+          type === "assistant.message" ||
+          type === "assistant.thinking" ||
+          type === "message"
+        ) {
+          emit({ kind: "agent.activity", study_id: studyId, event });
+          continue;
+        }
+
+        // 2. Custom tool-use → buffer it (by event id and tool-use id) then dispatch.
+        const toolUse = extractToolUse(event);
+        if (toolUse) {
+          if (event.id) toolUseBuffer.set(event.id, toolUse);
+          if (toolUse.id) toolUseBuffer.set(toolUse.id, toolUse);
+          if (await dispatchToolUse(toolUse)) {
+            done = true;
+            return "done";
+          }
+          continue;
+        }
+
+        // 3. The agent went idle. On the live API `session.status_idle` carries a
+        // `stop_reason`. `requires_action` means it is blocked on tool results we owe
+        // it: the blocking event ids are in stop_reason.event_ids — dispatch any we
+        // buffered but have not answered (a safety net over the direct path for an
+        // event seen only via history replay), then keep waiting (do NOT nudge).
+        // Any other stop reason (`end_turn`, `retries_exhausted`) is a real stopping
+        // point where we check done and otherwise nudge the next step.
+        if (
+          type === "session.status_idle" ||
+          type === "session.awaiting_input" ||
+          type === "session.idle" ||
+          type === "awaiting_input"
+        ) {
+          const stopReason = event.stop_reason ?? event.stopReason;
+          if (stopReason?.type === "requires_action") {
+            for (const id of stopReason.event_ids ?? []) {
+              const tu = toolUseBuffer.get(id);
+              if (tu && (await dispatchToolUse(tu))) {
+                done = true;
+                break;
+              }
+            }
+            if (done) return "done";
+            continue;
+          }
+          done = await isDoneGated({ studyId, controlPlane, outcomesEnabled, session: agent, sessionId, emit });
+          if (done) return "done";
+          await sendContinuationNudge();
+          continue;
+        }
+
+        // 3b. Session errors are conveyed as session.error (carrying error.message and a
+        // retry_status). If the orchestrator is retrying, keep streaming; otherwise it's
+        // a clean terminal failure — surface it and stop (don't hang to the SSE timeout).
+        if (type === "session.error") {
+          const err = event.error ?? {};
+          const retrying = err.retry_status === "retrying" || event.retry_status === "retrying";
+          if (retrying) {
+            // Non-terminal: surface progress but keep streaming.
+            emit({ kind: "loop.error", study_id: studyId, error: err.message ?? "session.error", retry_status: "retrying" });
+            continue;
+          }
+          emitTerminal("loop.error", { error: err.message ?? "session.error", terminal: true });
+          return "session_error";
+        }
+
+        // 4. Terminal session states.
+        if (
+          type === "session.status_terminated" ||
+          type === "session.completed" ||
+          type === "session.failed" ||
+          type === "completed"
+        ) {
+          return type;
+        }
+      }
+    } catch (err) {
+      // The stream tail threw (reconnect budget exhausted, or an unexpected adapter
+      // error). This is terminal: emit a distinct terminal frame so subscribers close
+      // instead of waiting on a stream that will never resume.
+      emitTerminal("loop.error", { error: String(err?.message ?? err), terminal: true, code: err?.code });
+      return "stream_failed";
+    }
+    // The stream closed cleanly with no `done` decision. On the live API this is the
+    // `end_turn`/`max_tokens` turn-end that simply ENDS the SSE stream — there is no idle
+    // event to nudge on. The OUTER loop re-streams after a continuation nudge.
+    return "stream_ended";
+  }
+
+  // ---- OUTER SELF-DRIVE LOOP ---------------------------------------------------------
+  // A single stream pass ends when the agent's turn ends (the `end_turn` close ENDS the
+  // SSE stream). That is NOT "done" — the runtime must push the agent to the next step
+  // itself, with no external nudger. So we RE-STREAM while the study is not done and
+  // budget remains, sending a continuation nudge between passes. A no-progress cap
+  // (N consecutive rounds with ZERO new tool calls) guarantees we can't spin forever if
+  // the agent goes inert. maxToolCalls / maxSessionSeconds are honored here AND in-stream.
+  const NO_PROGRESS_LIMIT = 3;
+  let noProgressRounds = 0;
+  try {
+    for (;;) {
+      // Budget gates BEFORE a stream pass (re-checked inside the stream too).
+      if (overDeadline()) {
         reason = "max_session_seconds";
         break;
       }
-
-      const type = event.type ?? event.event ?? "";
-
-      // 1. Surface assistant narration to the cockpit. `agent.*` are the live
-      // managed-agents shapes; `assistant.*`/`message` tolerate older builds/tests.
-      if (
-        type === "agent.message" ||
-        type === "agent.thinking" ||
-        type === "assistant.message" ||
-        type === "assistant.thinking" ||
-        type === "message"
-      ) {
-        emit({ kind: "agent.activity", study_id: studyId, event });
-        continue;
-      }
-
-      // 2. Custom tool-use → buffer it (by event id and tool-use id) then dispatch.
-      const toolUse = extractToolUse(event);
-      if (toolUse) {
-        if (event.id) toolUseBuffer.set(event.id, toolUse);
-        if (toolUse.id) toolUseBuffer.set(toolUse.id, toolUse);
-        if (await dispatchToolUse(toolUse)) {
-          done = true;
-          reason = "graded_done";
-          break;
-        }
-        continue;
-      }
-
-      // 3. The agent went idle. On the live API `session.status_idle` carries a
-      // `stop_reason`. `requires_action` means it is blocked on tool results we owe
-      // it: the blocking event ids are in stop_reason.event_ids — dispatch any we
-      // buffered but have not answered (a safety net over the direct path for an
-      // event seen only via history replay), then keep waiting (do NOT nudge).
-      // Any other stop reason (`end_turn`, `retries_exhausted`) is a real stopping
-      // point where we check done and otherwise nudge the next step.
-      if (
-        type === "session.status_idle" ||
-        type === "session.awaiting_input" ||
-        type === "session.idle" ||
-        type === "awaiting_input"
-      ) {
-        const stopReason = event.stop_reason ?? event.stopReason;
-        if (stopReason?.type === "requires_action") {
-          for (const id of stopReason.event_ids ?? []) {
-            const tu = toolUseBuffer.get(id);
-            if (tu && (await dispatchToolUse(tu))) {
-              done = true;
-              break;
-            }
-          }
-          if (done) {
-            reason = "graded_done";
-            break;
-          }
-          continue;
-        }
-        done = await isDoneGated({ studyId, controlPlane, outcomesEnabled, session: agent, sessionId, emit });
-        if (done) {
-          reason = "graded_done";
-          break;
-        }
-        // Surface the CURRENT enforced contract if a human changed it since we last
-        // told the model (incl. out-of-band /api/feedback that mutated study.constraints),
-        // so the next step is planned toward the new bound — not discovered via a 422.
-        const contractLine = await contractReminderIfChanged();
-        await agent.sendUserMessage(
-          sessionId,
-          "Review the latest runs with query_runs. If an experiment beat the baseline " +
-            "and survives a leakage/calibration check, promote it and write_report. " +
-            "Otherwise propose the next experiment (request approval first) or stop." +
-            contractLine,
-        );
-        emit({ kind: "nudge", study_id: studyId });
-        continue;
-      }
-
-      // 3b. Session errors are conveyed as session.error (carrying error.message and a
-      // retry_status). If the orchestrator is retrying, keep streaming; otherwise it's
-      // a clean terminal failure — surface it and stop (don't hang to the SSE timeout).
-      if (type === "session.error") {
-        const err = event.error ?? {};
-        const retrying = err.retry_status === "retrying" || event.retry_status === "retrying";
-        if (retrying) {
-          // Non-terminal: surface progress but keep streaming.
-          emit({ kind: "loop.error", study_id: studyId, error: err.message ?? "session.error", retry_status: "retrying" });
-          continue;
-        }
-        reason = "session_error";
-        emitTerminal("loop.error", { error: err.message ?? "session.error", terminal: true });
+      if (toolCalls >= maxToolCalls) {
+        reason = "max_tool_calls";
         break;
       }
 
-      // 4. Terminal session states.
+      const toolCallsBefore = toolCalls;
+      const status = await streamOnce();
+
+      if (status === "done") {
+        reason = "graded_done";
+        break;
+      }
+      if (status === "deadline") {
+        reason = "max_session_seconds";
+        break;
+      }
+      // streamOnce already emitted the terminal frame for these — do NOT emit another.
+      if (status === "session_error") {
+        reason = "session_error";
+        break;
+      }
+      if (status === "stream_failed") {
+        reason = "stream_failed";
+        break;
+      }
       if (
-        type === "session.status_terminated" ||
-        type === "session.completed" ||
-        type === "session.failed" ||
-        type === "completed"
+        status === "session.status_terminated" ||
+        status === "session.completed" ||
+        status === "session.failed" ||
+        status === "completed"
       ) {
-        reason = type;
+        reason = status;
+        break;
+      }
+
+      // status === "stream_ended": a clean turn-end with no done verdict — the production
+      // stall point. Re-check the grade once (a write_report may have landed in this pass
+      // without our gate firing, e.g. via history replay) before re-streaming.
+      done = await isDoneGated({ studyId, controlPlane, outcomesEnabled, session: agent, sessionId, emit });
+      if (done) {
+        reason = "graded_done";
+        break;
+      }
+
+      // No-progress cap: a full round with ZERO new tool calls means the agent is inert.
+      // Count consecutive inert rounds and bail with a distinct terminal reason so a stuck
+      // agent can't burn the whole wall-clock budget re-streaming nothing.
+      if (toolCalls === toolCallsBefore) {
+        noProgressRounds += 1;
+        if (noProgressRounds >= NO_PROGRESS_LIMIT) {
+          reason = "no_progress";
+          break;
+        }
+      } else {
+        noProgressRounds = 0;
+      }
+
+      // Re-check budget before nudging + re-streaming (this round may have exhausted it).
+      if (overDeadline()) {
+        reason = "max_session_seconds";
+        break;
+      }
+      if (toolCalls >= maxToolCalls) {
+        reason = "max_tool_calls";
+        break;
+      }
+
+      // Push the agent to continue, then loop back to re-stream.
+      try {
+        await sendContinuationNudge();
+      } catch (err) {
+        // Can't re-prompt the agent → no way to make progress; stop cleanly with a
+        // distinct terminal frame (the finally guard below then no-ops).
+        reason = "nudge_send_failed";
+        emitTerminal("session.ended", { reason: "nudge_send_failed", error: String(err?.message ?? err) });
         break;
       }
     }
-  } catch (err) {
-    // The stream tail threw (reconnect budget exhausted, or an unexpected adapter
-    // error). This is terminal: emit a distinct terminal frame so subscribers close
-    // instead of waiting on a stream that will never resume.
-    reason = "stream_failed";
-    emitTerminal("loop.error", { error: String(err?.message ?? err), terminal: true, code: err?.code });
   } finally {
     // GUARANTEE exactly one terminal frame. If we broke for done/timeout/clean-end and
     // haven't already emitted one (session.error/stream_failed paths do), emit it now.
