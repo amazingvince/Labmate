@@ -498,6 +498,191 @@ export function shortId(id: string | undefined, len = 6): string {
   return id.length > len ? `…${id.slice(-len)}` : id
 }
 
+// ---------------------------------------------------------------------------
+// Session transcript — reconstruct the agent's narration from the DURABLE
+// ledger so the Live tab can replay the last session even after the ephemeral
+// SSE stream is gone (container restart, study done/idle). Pure + null-guarded.
+// ---------------------------------------------------------------------------
+
+/** The visual/semantic class of a transcript line — drives the icon + tone. */
+export type TranscriptKind =
+  | 'profile'
+  | 'hypotheses'
+  | 'run'
+  | 'critique'
+  | 'leakage'
+  | 'decision'
+  | 'promote'
+  | 'feedback'
+  | 'report'
+
+/** One reconstructed activity line. `detail` is an optional second-line gloss. */
+export type TranscriptEntry = {
+  id: string
+  /** ISO `created_at` of the source entity, or undefined when it had none. */
+  ts?: string
+  kind: TranscriptKind
+  label: string
+  detail?: string
+}
+
+/** Truncate a free-text reason/finding to a single readable clause. */
+function clip(text: string | undefined, max = 120): string | undefined {
+  if (!text) return undefined
+  const t = text.replace(/\s+/g, ' ').trim()
+  if (!t) return undefined
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t
+}
+
+/** Detect generated contracts hanging off the dataset version (see ContractCard). */
+function hasContracts(dataset: StudyDetail['dataset_version']): boolean {
+  return Boolean((dataset as { contracts?: unknown } | undefined)?.contracts)
+}
+
+/** The readable model name for a run: explicit `params.model`, else hypothesis family. */
+function runModelName(run: Run, hypotheses: Hypothesis[]): string {
+  const model = run.params?.model
+  if (typeof model === 'string' && model.trim()) return model
+  const family = hypotheses.find((h) => h.id === run.hypothesis_id)?.model_family
+  if (typeof family === 'string' && family.trim()) return family
+  return 'experiment'
+}
+
+/**
+ * Reconstruct the last agent session as one chronological transcript from the
+ * durable ledger. Every line is derived from a timestamped entity, so the order
+ * is the real session order; entities without a timestamp keep array order
+ * (appended after the timestamped block, via `byCreatedAt`).
+ *
+ * Mapping (intentionally NOT one line per hypothesis — those are grouped):
+ *   dataset_version → "Profiled dataset" (+ rows / "generated data contract")
+ *   hypotheses[]    → ONE "Proposed N hypotheses" (+ model families)
+ *   run             → "Launched {model} → {status}" (+ primary metric)
+ *   critique        → "Critique · {KIND}" with the finding (leakage prominent)
+ *   decision        → "{action} {short run}" with a truncated reason
+ *   feedback        → "Human feedback: …" (+ "constraints updated")
+ *   report artifact → "Wrote model card"
+ */
+export function buildSessionTranscript(detail: StudyDetail | undefined): TranscriptEntry[] {
+  if (!detail) return []
+  const hypotheses = detail.hypotheses ?? []
+  const entries: TranscriptEntry[] = []
+
+  // 1. Dataset profiled / data contract generated.
+  const dv = detail.dataset_version
+  if (dv) {
+    const bits: string[] = []
+    if (typeof dv.row_count === 'number' && Number.isFinite(dv.row_count)) {
+      bits.push(`${dv.row_count.toLocaleString()} rows`)
+    }
+    if (hasContracts(dv)) bits.push('generated data contract')
+    entries.push({
+      id: `profile-${dv.id}`,
+      ts: dv.created_at,
+      kind: 'profile',
+      label: 'Profiled dataset',
+      detail: bits.length ? bits.join(' · ') : undefined,
+    })
+  }
+
+  // 2. Hypotheses — ONE grouped entry (don't spam one line each).
+  if (hypotheses.length > 0) {
+    const ordered = byCreatedAt(hypotheses)
+    const families = [
+      ...new Set(
+        ordered
+          .map((h) => h.model_family)
+          .filter((f): f is string => typeof f === 'string' && f.trim().length > 0),
+      ),
+    ]
+    entries.push({
+      // Anchor the grouped entry at the FIRST hypothesis's timestamp so it lands
+      // where the agent actually proposed them in the session order.
+      id: 'hypotheses',
+      ts: ordered[0]?.created_at,
+      kind: 'hypotheses',
+      label: `Proposed ${ordered.length} ${ordered.length === 1 ? 'hypothesis' : 'hypotheses'}`,
+      detail: families.length ? families.join(', ') : undefined,
+    })
+  }
+
+  // 3. Runs — one per launched experiment, with its primary metric.
+  const metricKey = primaryMetricKey(detail.study)
+  for (const run of detail.runs ?? []) {
+    const model = runModelName(run, hypotheses)
+    const primary = pickPrimaryMetric(run, metricKey)
+    const detailParts: string[] = []
+    if (primary) detailParts.push(`${metricLabel(primary.key)} ${formatMetricValue(primary.value)}`)
+    entries.push({
+      id: `run-${run.id}`,
+      ts: run.created_at,
+      kind: 'run',
+      label: `Launched ${model} → ${run.status}`,
+      detail: detailParts.length ? detailParts.join(' · ') : undefined,
+    })
+  }
+
+  // 4. Critiques — leakage / test-set tuning surfaced prominently.
+  for (const crit of detail.critiques ?? []) {
+    const kind: TranscriptKind = crit.kind === 'leakage' ? 'leakage' : 'critique'
+    entries.push({
+      id: `critique-${crit.id}`,
+      ts: crit.created_at,
+      kind,
+      label: `Critique · ${CRITIQUE_LABEL[crit.kind] ?? crit.kind.toUpperCase()}`,
+      detail: clip(crit.finding),
+    })
+  }
+
+  // 5. Decisions — promote stands out (success); the rest are neutral.
+  for (const dec of detail.decisions ?? []) {
+    const runId = dec.promoted_run_id ?? dec.rejected_run_id
+    const verb = dec.action.charAt(0).toUpperCase() + dec.action.slice(1)
+    const subject = runId ? ` ${shortId(runId)}` : ''
+    entries.push({
+      id: `decision-${dec.id}`,
+      ts: dec.created_at,
+      kind: dec.action === 'promote' ? 'promote' : 'decision',
+      label: `${verb}${subject}`,
+      detail: clip(dec.reason),
+    })
+  }
+
+  // 6. Human feedback / notes — the steering that shaped later experiments.
+  for (const fb of detail.feedback ?? []) {
+    if (fb.type !== 'human_feedback' && fb.type !== 'note') continue
+    const changed =
+      fb.parsed_constraints != null && Object.keys(fb.parsed_constraints).length > 0
+    entries.push({
+      id: `feedback-${fb.id ?? clip(fb.content, 16) ?? 'fb'}`,
+      ts: fb.created_at,
+      kind: 'feedback',
+      label: `Human feedback: ${clip(fb.content, 100) ?? '(note)'}`,
+      detail: changed ? 'constraints updated' : undefined,
+    })
+  }
+
+  // 7. Report artifact — the model card the agent wrote.
+  for (const art of detail.artifacts ?? []) {
+    if (art.kind !== 'report') continue
+    entries.push({
+      id: `report-${art.id}`,
+      ts: art.created_at,
+      kind: 'report',
+      label: 'Wrote model card',
+      detail: clip(
+        typeof art.meta?.reproducible_command === 'string' ? art.meta.reproducible_command : undefined,
+      ),
+    })
+  }
+
+  // Sort chronologically with the same stable `created_at` logic the ledger uses
+  // (entries key their clock as `ts`; mirror it to `created_at` for the sort).
+  return byCreatedAt(entries.map((e) => ({ ...e, created_at: e.ts }))).map(
+    ({ created_at: _drop, ...e }) => e,
+  )
+}
+
 /**
  * The metric key used to pick a run's headline number from `run.metrics`. The
  * study's recorded `metric` (e.g. "recall_at_fpr") is the key the runner writes,

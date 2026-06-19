@@ -79,8 +79,14 @@ export function StudyView({ studyId, tab }: { studyId: string; tab: StudyTab }) 
           // The live stream is independent of the study fetch — show it even while
           // the record is still being created or if the read errored. When the
           // session isn't live we never opened the stream; flag it idle so the
-          // feed renders "Session ended" instead of a perpetual spinner.
-          <AgentActivity events={stream.events} status={stream.status} idle={ready && !streamActive} />
+          // feed reconstructs the last session's transcript from the durable
+          // ledger (`detail`) instead of showing a bare "Session ended".
+          <AgentActivity
+            events={stream.events}
+            status={stream.status}
+            idle={ready && !streamActive}
+            detail={detail}
+          />
         ) : query.isError ? (
           <ErrorCard error={query.error} onRetry={() => query.refetch()} />
         ) : !ready || !detail || !study ? (
