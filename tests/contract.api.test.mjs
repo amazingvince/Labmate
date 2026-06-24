@@ -28,7 +28,7 @@ const AjvMod = require("ajv/dist/2020");
 const Ajv2020 = AjvMod.default || AjvMod;
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const TOKEN = "test-internal-token";
+const TOKEN = "dev-internal-token-0000000000000000";
 
 // ---------------------------------------------------------------------------
 // spec + schema validation (ajv against the OpenAPI response schemas)
@@ -427,6 +427,9 @@ function manifestFor(studyId, hypId, family, tags, feedbackId) {
   ex.manifest.hypothesis_id = hypId;
   ex.manifest.model = { family };
   ex.manifest.tags = tags;
+  // study #2's note tightens the FPR guardrail to 0.15; manifests must declare a
+  // max_fpr within the (now causally-mutated) bound or the C5 guardrail rejects them.
+  ex.manifest.metric = { ...(ex.manifest.metric || {}), max_fpr: 0.15 };
   if (feedbackId) ex.manifest.applied_feedback_id = feedbackId;
   ex.approval_id = ctx.approval2;
   return ex;
@@ -451,10 +454,25 @@ test("e2e setup: study #2 profiled, hypotheses proposed, approval + feedback rec
   r = await post("/api/feedback", { study_id: ctx.study2, type: "approval", scope: "study", content: "Approved.", target_id: ctx.approval2 });
   assert.equal(r.status, 201);
 
-  // a natural-language note whose parsed constraint will shape a later manifest
-  r = await post("/api/feedback", clone({ ...EX.FeedbackRecall.value, study_id: ctx.study2 }));
+  // A natural-language note that GENUINELY tightens the contract: study #2 starts at
+  // FPR <= 0.20; this note pulls it to 0.15. The merge mutates study.constraints, so the
+  // response reports constraints_changed and a later manifest is launched under the
+  // tighter bound (the real causal chain feedback_affected_plan now requires).
+  r = await post("/api/feedback", {
+    study_id: ctx.study2,
+    type: "human_feedback",
+    scope: "study",
+    content: "Recall still matters most, but tighten the false positive rate to 15% — 20% is too loose for enterprise.",
+  });
   assert.equal(r.status, 201);
+  assert.equal(r.json.constraints_changed, true);
   ctx.note2 = r.json.id;
+
+  // The mutation is observable on the study: the enforced FPR guardrail is now 0.15.
+  r = await get(`/api/studies/${ctx.study2}`);
+  assert.equal(r.status, 200);
+  const gjson = JSON.stringify(r.json.study.constraints || {});
+  assert.ok(/0\.15/.test(gjson), `study #2 guardrail should now be 0.15: ${gjson}`);
 });
 
 test("recordCritique: 201 leakage review BEFORE any tuned run (→ rerun)", async () => {

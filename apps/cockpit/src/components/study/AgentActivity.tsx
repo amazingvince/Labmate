@@ -3,27 +3,41 @@
  *  natural-language reasoning, the training script it authors, and the metrics
  *  each run returns. Styled with the shadcn primitives so it sits flush with the
  *  rest of the cockpit. */
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ActivityIcon,
   CheckIcon,
   ChevronRightIcon,
   CircleDotIcon,
   ClockIcon,
+  DatabaseIcon,
+  FileTextIcon,
+  FlaskConicalIcon,
+  HistoryIcon,
+  LightbulbIcon,
+  MessageSquareIcon,
   PenLineIcon,
   PlugZapIcon,
   RotateCwIcon,
+  ScaleIcon,
   SendIcon,
   SparklesIcon,
   SquareIcon,
+  TrophyIcon,
   TriangleAlertIcon,
   WrenchIcon,
 } from 'lucide-react'
 import type { AgentEvent, StreamStatus } from '@/api/useAgentStream'
+import type { StudyDetail } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
-import { shortId } from '@/lib/derive'
+import {
+  buildSessionTranscript,
+  shortId,
+  type TranscriptEntry,
+  type TranscriptKind,
+} from '@/lib/derive'
 
 /** Pull readable narration out of an agent.activity event's content blocks. */
 function narration(event: unknown): string {
@@ -106,6 +120,11 @@ function resultError(result: unknown): { error?: string; status?: number } {
   if (error == null && httpStatus == null) return {}
   return { error: error ?? 'error', status: httpStatus }
 }
+
+/** Live frame kinds that carry no agent narration — bare session lifecycle /
+ *  keepalive markers. A stream whose ONLY rows are these has nothing worth
+ *  preserving over the reconstructed transcript. */
+const TERMINAL_KINDS = new Set(['session.created', 'session.ended', 'loop.finished', 'study.done', 'nudge'])
 
 type Tone = 'muted' | 'human' | 'agent' | 'tool' | 'ok' | 'error'
 
@@ -316,27 +335,123 @@ function Row({ node }: { node: NonNullable<Node> }) {
   )
 }
 
-function StatusLamp({ status }: { status: StreamStatus }) {
-  const label =
-    status === 'connected'
-      ? 'Live'
-      : status === 'error'
-        ? 'Reconnecting'
-        : status === 'runtime_unavailable'
-          ? 'Offline'
-          : 'Connecting'
-  const tone =
-    status === 'connected'
-      ? 'bg-emerald-500'
-      : status === 'error'
-        ? 'bg-amber-500'
-        : status === 'runtime_unavailable'
-          ? 'bg-muted-foreground'
-          : 'bg-sky-500'
+// ---------------------------------------------------------------------------
+// Reconstructed transcript — what the agent did last session, replayed from the
+// durable ledger when the live stream is gone. Reuses the Row tone + timeline
+// styling so a replayed line is visually consistent with a live frame.
+// ---------------------------------------------------------------------------
+
+/** Tone + icon for each reconstructed transcript line. leakage→warning, promote→success. */
+const TRANSCRIPT_META: Record<TranscriptKind, { tone: Tone; icon: ReactNode; label: string }> = {
+  profile: { tone: 'muted', icon: <DatabaseIcon />, label: 'Dataset' },
+  hypotheses: { tone: 'agent', icon: <LightbulbIcon />, label: 'Plan' },
+  run: { tone: 'tool', icon: <FlaskConicalIcon />, label: 'Experiment' },
+  critique: { tone: 'human', icon: <ScaleIcon />, label: 'Critique' },
+  leakage: { tone: 'error', icon: <TriangleAlertIcon />, label: 'Critique' },
+  decision: { tone: 'muted', icon: <CircleDotIcon />, label: 'Decision' },
+  promote: { tone: 'ok', icon: <TrophyIcon />, label: 'Decision' },
+  feedback: { tone: 'human', icon: <MessageSquareIcon />, label: 'Human' },
+  report: { tone: 'ok', icon: <FileTextIcon />, label: 'Report' },
+}
+
+/** A short local clock for a transcript line's `created_at` (best-effort). */
+function formatTs(ts: string | undefined): string | undefined {
+  if (!ts) return undefined
+  const ms = Date.parse(ts)
+  if (Number.isNaN(ms)) return undefined
+  return new Date(ms).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/** One reconstructed transcript line, styled like a live Row. */
+function TranscriptRow({ entry }: { entry: TranscriptEntry }) {
+  const meta = TRANSCRIPT_META[entry.kind]
+  const ts = formatTs(entry.ts)
+  return (
+    <li className="relative flex gap-3 pb-4 last:pb-0">
+      <span
+        className={cn(
+          'mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border bg-background [&_svg]:size-3.5',
+          TONE_TEXT[meta.tone],
+        )}
+        aria-hidden="true"
+      >
+        {meta.icon}
+      </span>
+      <div className="min-w-0 flex-1 space-y-1">
+        <span className="flex items-baseline gap-2">
+          <span
+            className={cn('text-[11px] font-semibold uppercase tracking-wide', TONE_TEXT[meta.tone])}
+          >
+            {meta.label}
+          </span>
+          {ts && <span className="text-[11px] tabular-nums text-muted-foreground/70">{ts}</span>}
+        </span>
+        <div className="text-sm text-foreground/90">
+          <p className="leading-relaxed">{entry.label}</p>
+          {entry.detail && (
+            <p className="mt-0.5 text-xs text-muted-foreground">{entry.detail}</p>
+          )}
+        </div>
+      </div>
+    </li>
+  )
+}
+
+/** Header above the replayed transcript — names it, dates it, shows study status. */
+function TranscriptHeader({ status, last }: { status?: string; last?: string }) {
+  const ts = formatTs(last)
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+      <HistoryIcon className="size-3.5" aria-hidden="true" />
+      <span className="font-medium text-foreground/80">Last session transcript</span>
+      <span className="text-muted-foreground/70">reconstructed from the ledger</span>
+      {status && (
+        <Badge variant="secondary" className="ml-auto font-normal capitalize">
+          {status}
+        </Badge>
+      )}
+      {ts && <span className="tabular-nums text-muted-foreground/70">· {ts}</span>}
+    </div>
+  )
+}
+
+const LAMP: Record<StreamStatus, { label: string; tone: string }> = {
+  connected: { label: 'Live', tone: 'bg-emerald-500' },
+  connecting: { label: 'Connecting', tone: 'bg-sky-500' },
+  reconnecting: { label: 'Reconnecting', tone: 'bg-amber-500' },
+  error: { label: 'Error', tone: 'bg-destructive' },
+  runtime_unavailable: { label: 'Offline', tone: 'bg-muted-foreground' },
+  ended: { label: 'Ended', tone: 'bg-muted-foreground' },
+}
+
+function StatusLamp({
+  status,
+  idle,
+  replay,
+}: {
+  status: StreamStatus
+  idle?: boolean
+  /** A reconstructed transcript is on screen — label it "Replay", not "Idle". */
+  replay?: boolean
+}) {
+  const { label, tone } = replay
+    ? { label: 'Replay', tone: 'bg-muted-foreground' }
+    : idle
+      ? { label: 'Idle', tone: 'bg-muted-foreground' }
+      : LAMP[status]
   return (
     <span className="flex items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite">
       <span
-        className={cn('size-2 rounded-full', tone, status === 'connected' && 'animate-pulse')}
+        className={cn(
+          'size-2 rounded-full',
+          tone,
+          !idle && !replay && status === 'connected' && 'animate-pulse',
+        )}
         aria-hidden="true"
       />
       {label}
@@ -347,18 +462,70 @@ function StatusLamp({ status }: { status: StreamStatus }) {
 export function AgentActivity({
   events,
   status,
+  idle = false,
+  detail,
 }: {
   events: AgentEvent[]
   status: StreamStatus
+  /** The study is finished/idle and the stream was intentionally not opened —
+   *  render a calm terminal state instead of a perpetual connecting spinner. */
+  idle?: boolean
+  /** The durable ledger. When the live stream is gone we reconstruct the last
+   *  session's transcript from this so the tab is never just "Session ended". */
+  detail?: StudyDetail
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const rows = events.map((evt) => ({ evt, node: nodeFor(evt) })).filter((r) => r.node)
 
-  // Keep the newest activity in view as it streams in.
+  // Reconstructed last-session transcript from the durable ledger (pure, cheap to
+  // memoize on the detail identity). Always available even after a container restart.
+  const transcript = useMemo(() => buildSessionTranscript(detail), [detail])
+
+  // The live stream is "active" while it's opened and not yet terminal — keep
+  // showing live frames (priority: live session → stream). Only when the stream
+  // is NOT active do we fall back to the reconstructed transcript.
+  const streamLive =
+    !idle && (status === 'connecting' || status === 'connected' || status === 'reconnecting')
+  // "Real" live activity = anything beyond the bare terminal/keepalive markers. A
+  // session that opened only to report "no active session" (a lone session.ended /
+  // loop.finished) has no narration to preserve — treat it like an empty stream so
+  // the durable transcript can take over instead of a near-empty "Session ended".
+  const hasLiveContent = rows.some((r) => !TERMINAL_KINDS.has(r.evt.kind))
+  // Show the durable transcript when the stream isn't live AND carries no real live
+  // narration (ended / idle / no_active_session) and the ledger has content.
+  const showTranscript = !streamLive && !hasLiveContent && transcript.length > 0
+
+  // Keep the newest activity in view as it streams in (live rows only — the
+  // transcript is a static replay and should NOT auto-scroll past the top).
   useEffect(() => {
+    if (showTranscript) return
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [rows.length])
+  }, [rows.length, showTranscript])
+
+  const emptyState = () => {
+    if (idle && rows.length === 0) {
+      return <Empty icon={<SquareIcon className="size-5" />} label="Session ended — no live activity" />
+    }
+    if (status === 'runtime_unavailable' && rows.length === 0) {
+      return <Empty icon={<PlugZapIcon className="size-5" />} label="Runtime not connected" />
+    }
+    if (status === 'ended' && rows.length === 0) {
+      return <Empty icon={<SquareIcon className="size-5" />} label="Session ended — no live activity" />
+    }
+    if (status === 'error' && rows.length === 0) {
+      return <Empty icon={<TriangleAlertIcon className="size-5" />} label="Stream error — session not live" />
+    }
+    return (
+      <Empty
+        icon={<ActivityIcon className="size-5 animate-pulse" />}
+        label={status === 'connected' ? 'Awaiting agent activity…' : 'Connecting to live stream…'}
+      />
+    )
+  }
+
+  // The newest ledger timestamp dates the replay header + the "Ended" badge.
+  const lastTs = transcript.length ? transcript[transcript.length - 1].ts : undefined
 
   return (
     <Card className="flex h-[70vh] flex-col gap-0 overflow-hidden py-0">
@@ -367,16 +534,20 @@ export function AgentActivity({
           <ActivityIcon className="size-4 text-muted-foreground" />
           Agent activity
         </CardTitle>
-        <StatusLamp status={status} />
+        <StatusLamp status={status} idle={idle} replay={showTranscript} />
       </CardHeader>
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
-        {status === 'runtime_unavailable' && rows.length === 0 ? (
-          <Empty icon={<PlugZapIcon className="size-5" />} label="Runtime not connected" />
+        {showTranscript ? (
+          <>
+            <TranscriptHeader status={detail?.study?.status} last={lastTs} />
+            <ol className="relative">
+              {transcript.map((entry) => (
+                <TranscriptRow key={entry.id} entry={entry} />
+              ))}
+            </ol>
+          </>
         ) : rows.length === 0 ? (
-          <Empty
-            icon={<ActivityIcon className="size-5 animate-pulse" />}
-            label={status === 'connected' ? 'Awaiting agent activity…' : 'Connecting to live stream…'}
-          />
+          emptyState()
         ) : (
           <ol className="relative">
             {rows.map(({ evt, node }) => (

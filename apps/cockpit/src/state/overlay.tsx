@@ -35,9 +35,27 @@ export type OverlayAction =
   | { t: 'feedback'; studyId: string; feedback: Feedback }
   | { t: 'report'; studyId: string; report: Report }
   | { t: 'grade'; studyId: string; grade: GradeResult }
+  | { t: 'revert'; studyId: string; undo: UndoContext }
+
+/**
+ * The minimal description of an optimistic mutation, returned by a mutation's
+ * `onMutate` and dispatched back as `{ t: 'revert' }` from `onError` so a failed
+ * write (e.g. a 401 when the operator hasn't unlocked) doesn't leave a fake
+ * "approved" / "banned" delta on screen. Each kind names exactly what to undo;
+ * any optimistic feedback chip is matched by its synthetic local id.
+ */
+export type UndoContext =
+  | { kind: 'hyp'; hypId: string; prevStatus?: HypothesisStatus; feedbackId?: string }
+  | { kind: 'ban'; column: string; added: boolean; feedbackId?: string }
+  | { kind: 'rerun'; hypId: string; added: boolean; feedbackId?: string }
+  | { kind: 'feedback'; feedbackId?: string }
 
 function overlayFor(state: OverlayState, id: string): StudyOverlay {
   return state[id] ?? EMPTY
+}
+
+function dropFeedback(list: Feedback[], id: string | undefined): Feedback[] {
+  return id ? list.filter((f) => f.id !== id) : list
 }
 
 function reducer(state: OverlayState, action: OverlayAction): OverlayState {
@@ -72,6 +90,23 @@ function reducer(state: OverlayState, action: OverlayAction): OverlayState {
     case 'grade':
       next.grade = action.grade
       break
+    case 'revert': {
+      const u = action.undo
+      if (u.kind === 'hyp') {
+        if (u.prevStatus) next.hypStatus[u.hypId] = u.prevStatus
+        else delete next.hypStatus[u.hypId]
+        next.feedback = dropFeedback(next.feedback, u.feedbackId)
+      } else if (u.kind === 'ban') {
+        if (u.added) next.banned = next.banned.filter((c) => c !== u.column)
+        next.feedback = dropFeedback(next.feedback, u.feedbackId)
+      } else if (u.kind === 'rerun') {
+        if (u.added) next.reruns = next.reruns.filter((h) => h !== u.hypId)
+        next.feedback = dropFeedback(next.feedback, u.feedbackId)
+      } else {
+        next.feedback = dropFeedback(next.feedback, u.feedbackId)
+      }
+      break
+    }
   }
   return { ...state, [action.studyId]: next }
 }

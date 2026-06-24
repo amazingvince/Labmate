@@ -20,6 +20,11 @@ import type {
   StudyDetail,
   StudyListResponse,
 } from './types'
+import {
+  uploadDataset as uploadDatasetCsv,
+  type UploadDatasetOpts,
+  type UploadDatasetResponse,
+} from './datasets'
 
 const RAW_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:4010'
 export const API_BASE = RAW_BASE.replace(/\/+$/, '')
@@ -106,7 +111,15 @@ export const api = {
     return request<Report>(`/api/studies/${encodeURIComponent(studyId)}/report`)
   },
 
-  /** Direct URL to the raw model-card markdown (downloadable / openable). */
+  /**
+   * Direct URL to the raw model-card markdown (downloadable / openable).
+   *
+   * NOTE: this is consumed as a bare `<a href>` GET — the browser fetches it
+   * WITHOUT the operator bearer token (an anchor can't carry an Authorization
+   * header). It only works because the report route is PUBLIC (reads are public;
+   * the markdown carries no secrets). If that route is ever moved behind auth,
+   * this link breaks and must become a token-bearing `fetch` + object URL.
+   */
   reportMarkdownUrl(studyId: string): string {
     return `${API_BASE}/api/studies/${encodeURIComponent(studyId)}/report?format=md`
   },
@@ -137,5 +150,10 @@ export const api = {
 
   proposeExperiments(study_id: string, n = 6): Promise<ProposeExperimentsResponse> {
     return post<ProposeExperimentsResponse>('/api/experiments/propose', { study_id, n })
+  },
+
+  /** Upload a raw CSV and get its server-side profile (token-gated write). */
+  uploadDataset(csv: string, opts?: UploadDatasetOpts): Promise<UploadDatasetResponse> {
+    return uploadDatasetCsv(csv, opts)
   },
 }

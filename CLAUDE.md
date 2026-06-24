@@ -52,18 +52,26 @@ node .claude/workflows/run-study.js examples/sla_tickets
    raw SQL or raw Modal APIs.
 7. Stay inside `docs/GOALS.md` non-goals. No medical/education/sports datasets.
 
-## The scientific loop (what run-study.js orchestrates)
+## The scientific loop
 
 ```
 brief -> profile_dataset -> data contract
       -> propose_experiments (hypothesis cards)
       -> [HUMAN CHECKPOINT: approve/edit/reject/guide]
       -> launch_experiment (Modal) x N, logging metrics+rationale+hypothesis_id
-      -> experiment-critic reviews (leakage, test-set tuning, metric concerns)
+      -> critic reviews (leakage, test-set tuning, metric concerns)
       -> rerun corrected experiments
       -> write_report (model card + provenance)
       -> grade_study_against_rubric (docs/rubric.json)
 ```
+
+Two ways to drive this loop — they are different:
+- **Interactive Claude-Code path** drives it by delegating to the subagents below
+  and firing the `.claude/settings.json` hooks (this is where `experiment-critic`
+  et al. actually run).
+- **`.claude/workflows/run-study.js`** is a headless, flat Node driver that calls
+  the control-plane API in sequence to reproduce the same study deterministically.
+  It does **not** spawn subagents or fire the hooks — it is the reproducible replay.
 
 ## Subagents (.claude/agents)
 - **ds-planner** — profiles data, writes the contract, proposes hypothesis cards.

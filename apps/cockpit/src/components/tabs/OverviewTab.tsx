@@ -11,7 +11,17 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import {
+  baselineRun,
+  bestRun,
+  formatMetricValue,
+  metricDelta,
+  metricLabel,
+  primaryMetricKey,
+  runsForHypothesis,
+} from '@/lib/derive'
 import { BriefCard } from '@/components/study/BriefCard'
+import { ContractCard } from '@/components/study/ContractCard'
 import { ReadinessSummary } from '@/components/study/ReadinessRubric'
 import { FeedbackForm } from '@/components/study/FeedbackForm'
 import { splitRecommendation } from '@/components/study/RecommendationPanel'
@@ -64,11 +74,28 @@ export function OverviewTab({
   actions: StudyActions
 }) {
   const hyps = detail.hypotheses ?? []
-  const approved = hyps.filter((h) => h.status === 'approved').length
   const runs = detail.runs ?? []
+  // "Activated" = approved OR already run OR tested. Live hypotheses keep
+  // status 'proposed' after they run, so a plain status==='approved' count reads
+  // 0/19 — derive from runs-or-approved-or-tested instead.
+  const activated = hyps.filter(
+    (h) =>
+      h.status === 'approved' ||
+      h.status === 'tested' ||
+      runsForHypothesis(runs, h.id).length > 0,
+  ).length
   const completed = runs.filter((r) => r.status === 'completed').length
   const rows = detail.dataset_version?.row_count
   const { verb, detail: recDetail } = splitRecommendation(recommendation, flag)
+  // splitRecommendation returns verb='' for prose; show a sensible tile value.
+  const recValue = verb || (recDetail ? 'Note' : '—')
+
+  // Best-vs-baseline, derived from the same helpers the leaderboard uses.
+  const metricKey = primaryMetricKey(study)
+  const baseline = baselineRun(runs)
+  const best = bestRun(runs, metricKey, report, detail.decisions, detail.hypotheses)
+  const bestVal = metricKey ? best?.metrics?.[metricKey] : undefined
+  const bestDelta = metricKey ? metricDelta(best, baseline, metricKey) : undefined
 
   return (
     <div className="space-y-6">
@@ -76,8 +103,8 @@ export function OverviewTab({
         <StatTile
           href={studyHref(studyId, 'experiments')}
           label="Experiments"
-          value={`${approved}/${hyps.length}`}
-          sub="approved"
+          value={`${activated}/${hyps.length}`}
+          sub="approved or run"
         />
         <StatTile
           href={studyHref(studyId, 'experiments')}
@@ -94,10 +121,31 @@ export function OverviewTab({
         <StatTile
           href={studyHref(studyId, 'report')}
           label="Recommendation"
-          value={<span className="text-xl">{verb}</span>}
+          value={<span className="text-xl">{recValue}</span>}
           sub={recDetail || undefined}
         />
       </div>
+
+      {metricKey && bestVal != null && (
+        <a
+          href={studyHref(studyId, 'experiments')}
+          className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <span>best vs baseline:</span>
+          <span className="font-mono text-foreground tabular-nums">
+            {metricLabel(metricKey)} {formatMetricValue(bestVal as number)}
+          </span>
+          {bestDelta && (
+            <span
+              className="font-mono tabular-nums"
+              style={bestDelta.better ? { color: 'var(--st-completed)' } : undefined}
+            >
+              ({bestDelta.abs >= 0 ? '+' : ''}
+              {formatMetricValue(bestDelta.abs)})
+            </span>
+          )}
+        </a>
+      )}
 
       <div className="grid items-start gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
@@ -112,6 +160,10 @@ export function OverviewTab({
           </CardContent>
         </Card>
       </div>
+
+      {/* The GENERATED per-study data + metric contract. Renders nothing when the
+          study carries no `contracts` (older rows / golden path). */}
+      <ContractCard dataset={detail.dataset_version} />
 
       <Card>
         <CardHeader>

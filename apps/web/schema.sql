@@ -19,8 +19,23 @@ CREATE TABLE IF NOT EXISTS study (
   constraints_json TEXT,                      -- { primary_metric, guardrails[], banned_columns[], require_interpretability }
   budget_json     TEXT,                       -- { max_trials, budget_seconds }
   rubric          TEXT DEFAULT 'docs/rubric.json',
-  status          TEXT DEFAULT 'open',        -- open | done | stopped
+  status          TEXT DEFAULT 'open',        -- open | running | done | stopped
   created_at      TEXT NOT NULL
+);
+
+-- Catalog of UPLOADED datasets (POST /api/datasets). Distinct from dataset_version,
+-- which is the per-study profiled data contract. A `dataset` row records the CSV's
+-- content hash + cached real-profiling result so a study can attach to it by
+-- dataset_id. The bundled `sla_tickets` golden path needs no row here.
+CREATE TABLE IF NOT EXISTS dataset (
+  id              TEXT PRIMARY KEY,           -- dataset_<ulid> or a caller-supplied id
+  source          TEXT,                       -- 'uploaded' | 'bundled'
+  content_hash    TEXT,                       -- sha256 of the raw CSV bytes
+  row_count       INTEGER,                    -- rows observed (sampled, capped)
+  target          TEXT,                       -- optional target hint used for leakage scoring
+  profile_json    TEXT,                       -- cached profileCsv() result
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS dataset_version (
@@ -35,6 +50,8 @@ CREATE TABLE IF NOT EXISTS dataset_version (
   seed            INTEGER,
   leakage_candidates_json TEXT,               -- ["resolved_at", ...]
   banned_columns_json     TEXT,
+  data_contract_json   TEXT,                  -- generated PER-STUDY data contract (contracts.js)
+  metric_contract_json TEXT,                  -- generated PER-STUDY metric contract (contracts.js)
   created_at      TEXT NOT NULL
 );
 
@@ -46,7 +63,7 @@ CREATE TABLE IF NOT EXISTS hypothesis (
   model_family    TEXT,
   features_json   TEXT,
   expected_outcome TEXT,
-  status          TEXT DEFAULT 'proposed',    -- proposed | approved | rejected
+  status          TEXT DEFAULT 'proposed',    -- proposed | approved | tested | rejected
   created_at      TEXT NOT NULL
 );
 
@@ -91,6 +108,7 @@ CREATE TABLE IF NOT EXISTS run (
   dataset_hash    TEXT,
   code_hash       TEXT,
   seed            INTEGER,
+  applied_feedback_id TEXT,                   -- which human feedback shaped this run (grade: feedback_affected_plan)
   created_at      TEXT NOT NULL
 );
 

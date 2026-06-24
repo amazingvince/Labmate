@@ -1,0 +1,55 @@
+# gitleaks configuration for Labmate.
+# Extends the upstream default ruleset (Anthropic/AWS/GitHub/Stripe/etc.) and adds
+# Labmate-specific rules. Run via the pre-commit hook (.pre-commit-config.yaml) or
+# directly:  gitleaks detect --config .gitleaks.toml --redact
+#
+# Docs: https://github.com/gitleaks/gitleaks
+title = "Labmate gitleaks config"
+
+# Pull in gitleaks' built-in rules so well-known providers are covered without
+# re-declaring them here. Our [[rules]] below are additive.
+[extend]
+useDefault = true
+
+# --- Labmate-specific rules -------------------------------------------------
+
+# The shared internal token between the MCP server / cockpit and the Worker.
+# Generated with `openssl rand -hex 24` -> 48 lowercase hex chars. Catch it both as
+# a bare 48-hex assignment to the env var and as a Bearer header value.
+[[rules]]
+id = "labmate-internal-token"
+description = "Labmate internal shared token (LABMATE_INTERNAL_TOKEN)"
+regex = '''(?i)\bLABMATE_INTERNAL_TOKEN\b\s*[:=]\s*['"]?([0-9a-f]{24,})['"]?'''
+keywords = ["labmate_internal_token"]
+secretGroup = 1
+
+# Anthropic API key (defensive — also covered by the default ruleset).
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key"
+regex = '''sk-ant-[a-zA-Z0-9_\-]{20,}'''
+keywords = ["sk-ant-"]
+
+# Modal token secret (printed by `modal token new`).
+[[rules]]
+id = "modal-token-secret"
+description = "Modal token secret"
+regex = '''\bas-[a-zA-Z0-9]{20,}\b'''
+keywords = ["as-"]
+
+# --- Allowlist --------------------------------------------------------------
+# Keep the example/template files and docs out of scope: they intentionally show
+# placeholders and the *names* of secrets, not real values.
+[allowlist]
+description = "Templates, docs, and lockfiles — placeholders only, no live secrets"
+paths = [
+  '''(^|/)\.env\.example$''',
+  '''(^|/)\.dev\.vars\.example$''',
+  '''(^|/)docs/ENV\.md$''',
+  '''(^|/)HOWTO\.md$''',
+  '''(^|/)package-lock\.json$''',
+]
+# `openssl rand -hex 24` appears in docs as the generation instruction, not a value.
+regexes = [
+  '''openssl rand -hex 24''',
+]

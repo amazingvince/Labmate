@@ -1,7 +1,14 @@
 # Data contract — sla_tickets (golden path)
 
-`profile_dataset` fills this in per study. This committed version describes the bundled
-`examples/sla_tickets` dataset so the demo is deterministic.
+`profile_dataset` fills this in per study. For ANY uploaded dataset the control plane now
+GENERATES a structured per-study data + metric contract from the profile
+(`apps/web/src/contracts.js`), persists it on the study's `dataset_version`
+(`data_contract_json` / `metric_contract_json`) plus an R2 artifact at
+`studies/{id}/contract/...`, and exposes it under `dataset_version.contracts` in
+`GET /api/studies/{id}`. This committed version describes the bundled
+`examples/sla_tickets` dataset so the demo is deterministic and equals the generated
+contract for that dataset (target, the 4 banned leakage candidates, time-based split on
+`created_at`, seed 42).
 
 ## Target
 - **Column**: `breached_sla` (binary: 1 = breached, 0 = met).

@@ -3,19 +3,52 @@
  * render: metric formatting, guardrail derivation, run/critique linking, the
  * merged ledger feed, and a best-effort NL→constraint parse for the feedback box.
  *
- * NOTE: the API carries no timestamps, so the ledger is ordered by event type
- * then array sequence (feedback → runs → critiques → decisions), not by clock.
+ * NOTE: every entity carries a `created_at` (date-time) — the ledger is ordered
+ * by that real clock when present, falling back to array sequence only when a
+ * timestamp is missing.
  */
 import type {
+  Constraints,
   Critique,
   CritiqueKind,
   Decision,
   Feedback,
+  Hypothesis,
+  Report,
   Run,
   RunStatus,
   Study,
   StudyDetail,
 } from '../api/types'
+
+/** Entities that may carry an ISO `created_at`. */
+type Timestamped = { created_at?: string }
+
+/** Epoch millis for a `created_at`, or NaN when absent/unparseable. */
+function createdAtMs(x: Timestamped): number {
+  if (!x.created_at) return Number.NaN
+  const t = Date.parse(x.created_at)
+  return Number.isNaN(t) ? Number.NaN : t
+}
+
+/**
+ * Stable chronological sort by `created_at`. Items with a timestamp come first
+ * in clock order; items missing one keep their original array order (appended
+ * after the timestamped block). Never mutates the input.
+ */
+export function byCreatedAt<T extends Timestamped>(items: readonly T[]): T[] {
+  return items
+    .map((data, i) => ({ data, i, t: createdAtMs(data) }))
+    .sort((a, b) => {
+      const aHas = !Number.isNaN(a.t)
+      const bHas = !Number.isNaN(b.t)
+      if (aHas && bHas) return a.t - b.t || a.i - b.i
+      if (aHas) return -1
+      if (bHas) return 1
+      return a.i - b.i
+    })
+    .map((x) => x.data)
+}
 
 export const METRIC_LABELS: Record<string, string> = {
   recall: 'Recall',
@@ -68,14 +101,22 @@ export function runsForHypothesis(runs: Run[], hypothesisId: string): Run[] {
   return runs.filter((r) => r.hypothesis_id === hypothesisId)
 }
 
-/** No timestamps in the API — "latest" is the last run in array order. */
+/** "Latest" = the run with the newest `created_at`; falls back to array order
+ *  (last element) when timestamps are missing. */
 export function latestRun(runs: Run[]): Run | undefined {
-  return runs.length ? runs[runs.length - 1] : undefined
+  if (runs.length === 0) return undefined
+  const ordered = byCreatedAt(runs)
+  return ordered[ordered.length - 1]
 }
 
-export function critiquesForRun(critiques: Critique[], runId: string | undefined): Critique[] {
-  if (!runId) return []
-  return critiques.filter((c) => c.target_run_id === runId)
+/**
+ * Critiques are surfaced at STUDY scope, not per-run. The backend never sets
+ * `Critique.target_run_id`, so a run-level filter on it always returns [] — that
+ * false linking is dropped. Callers that want the study's flagged critiques
+ * (leakage / test-set tuning) use `flaggedCritiques` instead.
+ */
+export function flaggedCritiques(critiques: Critique[]): Critique[] {
+  return critiques.filter((c) => c.kind === 'leakage' || c.kind === 'test_set_tuning')
 }
 
 export function decisionsForRun(decisions: Decision[], runId: string | undefined): Decision[] {
@@ -130,24 +171,255 @@ export function runStatusMeta(status: RunStatus): RunStatusMeta {
 
 export type DerivedGuardrails = { primaryMetric?: string; guardrails: string[] }
 
-/** Guardrails aren't on Study; derive them from parsed feedback constraints. */
+function constraintsOf(detail: StudyDetail): Constraints | undefined {
+  return detail.study?.constraints
+}
+
+/**
+ * Guardrails + primary metric. PRIMARY source is `study.constraints` (the human
+ * checkpoint persists `primary_metric` + `guardrails[].expr` there). We then
+ * union any additional signals parsed from natural-language feedback notes, so a
+ * mid-study steer that adds a guardrail still shows up. (Fixes the old
+ * "None recorded yet" — guardrails ARE on Study, via `constraints`.)
+ */
 export function deriveGuardrails(detail: StudyDetail): DerivedGuardrails {
   const guardrails = new Set<string>()
   let primaryMetric: string | undefined
+
+  const constraints = constraintsOf(detail)
+  if (constraints) {
+    if (typeof constraints.primary_metric === 'string') primaryMetric = constraints.primary_metric
+    for (const g of constraints.guardrails ?? []) {
+      if (typeof g.expr === 'string' && g.expr.trim()) guardrails.add(g.expr.trim())
+    }
+  }
+
   for (const fb of detail.feedback ?? []) {
     const parsed = fb.parsed_constraints as Record<string, unknown> | undefined
     if (!parsed) continue
-    if (typeof parsed.primary_metric === 'string') primaryMetric = parsed.primary_metric
+    // Feedback only overrides the headline metric if constraints didn't set one.
+    if (!primaryMetric && typeof parsed.primary_metric === 'string') {
+      primaryMetric = parsed.primary_metric
+    }
     const g = parsed.guardrail ?? parsed.guardrails
     if (typeof g === 'string') guardrails.add(g)
     else if (Array.isArray(g)) g.forEach((x) => typeof x === 'string' && guardrails.add(x))
   }
+
   return { primaryMetric, guardrails: [...guardrails] }
 }
 
-/** Banned columns = flagged leakage candidates ∪ explicit ban_feature feedback. */
+/** Pull a numeric FPR bound out of a guardrail expr like "false_positive_rate <= 0.20". */
+export function guardrailFprBound(exprs: string[]): number | undefined {
+  for (const e of exprs) {
+    const m = e.match(/false[_ ]?positive[_ ]?rate\s*<?=\s*(0?\.\d+|\d+(?:\.\d+)?)/i)
+    if (m) {
+      const v = Number(m[1])
+      if (Number.isFinite(v)) return v
+    }
+  }
+  return undefined
+}
+
+/** The FPR a run actually tuned/evaluated at, if it reports one (`target_fpr`). */
+export function runTargetFpr(run: Run | undefined): number | undefined {
+  const v = run?.metrics?.target_fpr
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+// ---------------------------------------------------------------------------
+// Leaderboard derivations — baseline, best, deltas, guardrail, applied feedback.
+// All pure + null-guarded so the table can render against partial live data.
+// ---------------------------------------------------------------------------
+
+/** A finite numeric metric off a run, or undefined. */
+function metricNumber(run: Run | undefined, key: string): number | undefined {
+  const v = run?.metrics?.[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+/** True when a run carries a dummy-baseline marker in its artifacts (the runner
+ *  stamps `artifacts.dummy` — a boolean flag on the shim, an object of baseline
+ *  metrics on the script path). Either truthy form counts. */
+function carriesDummyArtifact(run: Run): boolean {
+  const d = (run.artifacts as Record<string, unknown> | undefined)?.dummy
+  return Boolean(d)
+}
+
+/**
+ * The baseline run for a study: prefer one tagged `baseline`, else the one that
+ * carries a `dummy` artifact, else the chronologically-first run. The baseline is
+ * what every other run's primary metric is compared against.
+ */
+export function baselineRun(runs: Run[]): Run | undefined {
+  if (runs.length === 0) return undefined
+  const tagged = runs.find((r) => (r.tags ?? []).includes('baseline'))
+  if (tagged) return tagged
+  const dummy = runs.find(carriesDummyArtifact)
+  if (dummy) return dummy
+  return byCreatedAt(runs)[0]
+}
+
+/** A promoted run id from the decision log (the latest `promote` wins). */
+function promotedRunId(decisions: Decision[] | undefined): string | undefined {
+  let id: string | undefined
+  for (const d of byCreatedAt(decisions ?? [])) {
+    if (d.action === 'promote' && d.promoted_run_id) id = d.promoted_run_id
+  }
+  return id
+}
+
+/**
+ * A "dummy"/baseline-ish run that must never be starred as the study's best:
+ * a dummy-artifact marker, a `dummy`/`baseline` tag, or a model name/family that
+ * reads as a dummy. The model name lives on `params.model`; the family lives on
+ * the run's hypothesis (`model_family`), which is what the leaderboard renders
+ * when `params.model` is absent — so a smoke/dummy run shows "dummy" in the table
+ * and must be excluded here too. These are reference rows, not winners.
+ */
+function isDummyRun(run: Run, hypotheses?: Hypothesis[]): boolean {
+  if (carriesDummyArtifact(run)) return true
+  const tags = (run.tags ?? []).map((t) => String(t).toLowerCase())
+  if (tags.includes('dummy') || tags.includes('baseline')) return true
+  const model = run.params?.model
+  if (typeof model === 'string' && model.toLowerCase().includes('dummy')) return true
+  const family = hypotheses?.find((h) => h.id === run.hypothesis_id)?.model_family
+  if (typeof family === 'string' && family.toLowerCase().includes('dummy')) return true
+  return false
+}
+
+/**
+ * The "best" run to star in the leaderboard. Resolution order:
+ *   1. `report.best_run_id` (the report's recorded winner), if it's a REAL run
+ *   2. a promoted run from the decision log, if it's a REAL run
+ *   3. the real, non-baseline run with the best primary-metric value
+ * "Real" excludes the baseline and any dummy/baseline run (by tag, `params.model`,
+ * or hypothesis `model_family`), and requires a FINITE primary value resolved the
+ * SAME key-tolerant way the leaderboard column resolves it (`pickPrimaryMetric` —
+ * falls back to the run's first metric when the exact `primaryKey` is absent).
+ * Returns undefined when nothing qualifies — we render no star rather than falling
+ * back to "first completed run". A promoted or reported dummy is nonsensical, so
+ * those shortcuts only fire for an eligible run.
+ */
+export function bestRun(
+  runs: Run[],
+  primaryKey: string | undefined,
+  report?: Report,
+  decisions?: Decision[],
+  hypotheses?: Hypothesis[],
+): Run | undefined {
+  if (runs.length === 0) return undefined
+  const byId = (id?: string) => (id ? runs.find((r) => r.id === id) : undefined)
+
+  const base = baselineRun(runs)
+  // Key-tolerant primary value, exactly as the leaderboard COLUMN resolves it.
+  const valueOf = (r: Run): number => pickPrimaryMetric(r, primaryKey)?.value ?? Number.NaN
+  const isEligible = (r: Run): boolean =>
+    r.id !== base?.id &&
+    r.status === 'completed' &&
+    !isDummyRun(r, hypotheses) &&
+    Number.isFinite(valueOf(r))
+
+  const reported = byId(report?.best_run_id)
+  if (reported && isEligible(reported)) return reported
+  const promoted = byId(promotedRunId(decisions))
+  if (promoted && isEligible(promoted)) return promoted
+
+  const candidates = runs.filter(isEligible)
+  if (candidates.length === 0) return undefined
+  // Max the primary metric. For error metrics (rmse/mae/brier/log_loss) lower is
+  // better, so flip the comparison.
+  const lowerIsBetter = isLowerBetter(primaryKey)
+  return candidates.reduce((best, r) => {
+    const rv = valueOf(r)
+    const bv = valueOf(best)
+    if (!Number.isFinite(rv)) return best
+    if (!Number.isFinite(bv)) return r
+    return lowerIsBetter ? (rv < bv ? r : best) : rv > bv ? r : best
+  })
+}
+
+const LOWER_IS_BETTER = new Set(['rmse', 'mae', 'brier', 'log_loss', 'false_positive_rate', 'fpr'])
+
+/** Whether a metric is an error/loss where smaller is better. */
+export function isLowerBetter(key: string | undefined): boolean {
+  return key ? LOWER_IS_BETTER.has(key) : false
+}
+
+export type MetricDelta = { abs: number; pp: number; better: boolean }
+
+/**
+ * The delta of `run`'s metric vs the `baseline`'s, for `key`. `abs` is the raw
+ * difference; `pp` is the same expressed in percentage points (×100) for rates.
+ * `better` accounts for lower-is-better metrics. Returns undefined when either
+ * side is missing the metric (never invents a comparison).
+ */
+export function metricDelta(
+  run: Run | undefined,
+  baseline: Run | undefined,
+  key: string | undefined,
+): MetricDelta | undefined {
+  if (!key) return undefined
+  const rv = metricNumber(run, key)
+  const bv = metricNumber(baseline, key)
+  if (rv == null || bv == null) return undefined
+  const abs = rv - bv
+  const better = isLowerBetter(key) ? abs < 0 : abs > 0
+  return { abs, pp: abs * 100, better }
+}
+
+export type GuardrailStatus = {
+  /** true = satisfied, false = violated, undefined = not evaluable. */
+  satisfied: boolean | undefined
+  /** The run's actual false-positive rate, if reported. */
+  actualFpr: number | undefined
+  /** The study's FPR bound (ceiling), if one is in force. */
+  bound: number | undefined
+}
+
+/**
+ * Whether a run honors the study's FPR guardrail. Sources, in order:
+ *   1. an explicit `run.metrics.fpr_guardrail_satisfied` (1/0) if the runner
+ *      flattened it into metrics — rare, since the worker keeps `metrics`
+ *      numbers-only and the flag lives at result top-level
+ *   2. otherwise compare the run's `false_positive_rate` against the bound parsed
+ *      from `study.constraints.guardrails[].expr`
+ * Returns satisfied=undefined when neither the bound nor the FPR is known.
+ */
+export function guardrailStatus(run: Run, study: Study | undefined): GuardrailStatus {
+  const exprs = (study?.constraints?.guardrails ?? [])
+    .map((g) => g.expr)
+    .filter((e): e is string => typeof e === 'string')
+  const bound = guardrailFprBound(exprs)
+  const actualFpr = metricNumber(run, 'false_positive_rate')
+
+  const flag = run.metrics?.fpr_guardrail_satisfied
+  if (typeof flag === 'number') {
+    return { satisfied: flag === 1, actualFpr, bound }
+  }
+  if (bound != null && actualFpr != null) {
+    return { satisfied: actualFpr <= bound + 1e-9, actualFpr, bound }
+  }
+  return { satisfied: undefined, actualFpr, bound }
+}
+
+/** The Feedback entry whose parsed constraint shaped this run, if any. */
+export function appliedFeedback(run: Run, feedback: Feedback[] | undefined): Feedback | undefined {
+  if (!run.applied_feedback_id) return undefined
+  return (feedback ?? []).find((f) => f.id === run.applied_feedback_id)
+}
+
+/**
+ * Banned columns. PRIMARY source is `study.constraints.banned_columns` (the
+ * authoritative ban list from the contract / human checkpoint). We then union
+ * dataset leakage candidates and any explicit `ban_feature` feedback so a
+ * mid-study ban shows up before the contract is re-persisted.
+ */
 export function deriveBannedColumns(detail: StudyDetail): Set<string> {
   const banned = new Set<string>()
+  for (const name of constraintsOf(detail)?.banned_columns ?? []) {
+    if (name) banned.add(name)
+  }
   for (const col of detail.dataset_version?.columns ?? []) {
     if (col.is_candidate_leakage) banned.add(col.name)
   }
@@ -193,20 +465,32 @@ export function guardrailLabel(expr: string): string {
 }
 
 export type LedgerEntry =
-  | { kind: 'feedback'; id: string; data: Feedback }
-  | { kind: 'run'; id: string; data: Run }
-  | { kind: 'critique'; id: string; data: Critique }
-  | { kind: 'decision'; id: string; data: Decision }
+  | { kind: 'feedback'; id: string; data: Feedback; created_at?: string }
+  | { kind: 'run'; id: string; data: Run; created_at?: string }
+  | { kind: 'critique'; id: string; data: Critique; created_at?: string }
+  | { kind: 'decision'; id: string; data: Decision; created_at?: string }
 
+/**
+ * The merged ledger feed, ordered by real `created_at` across all event types.
+ * Each entry carries the source timestamp so the timeline can sort one unified
+ * stream (a critique that lands between two runs shows between them). Entries
+ * without a timestamp keep their relative array order at the end.
+ */
 export function buildLedger(detail: StudyDetail): LedgerEntry[] {
   const entries: LedgerEntry[] = []
   ;(detail.feedback ?? []).forEach((data, i) =>
-    entries.push({ kind: 'feedback', id: data.id ?? `fb-${i}`, data }),
+    entries.push({ kind: 'feedback', id: data.id ?? `fb-${i}`, data, created_at: data.created_at }),
   )
-  ;(detail.runs ?? []).forEach((data) => entries.push({ kind: 'run', id: data.id, data }))
-  ;(detail.critiques ?? []).forEach((data) => entries.push({ kind: 'critique', id: data.id, data }))
-  ;(detail.decisions ?? []).forEach((data) => entries.push({ kind: 'decision', id: data.id, data }))
-  return entries
+  ;(detail.runs ?? []).forEach((data) =>
+    entries.push({ kind: 'run', id: data.id, data, created_at: data.created_at }),
+  )
+  ;(detail.critiques ?? []).forEach((data) =>
+    entries.push({ kind: 'critique', id: data.id, data, created_at: data.created_at }),
+  )
+  ;(detail.decisions ?? []).forEach((data) =>
+    entries.push({ kind: 'decision', id: data.id, data, created_at: data.created_at }),
+  )
+  return byCreatedAt(entries)
 }
 
 export function shortId(id: string | undefined, len = 6): string {
@@ -214,6 +498,209 @@ export function shortId(id: string | undefined, len = 6): string {
   return id.length > len ? `…${id.slice(-len)}` : id
 }
 
+// ---------------------------------------------------------------------------
+// Session transcript — reconstruct the agent's narration from the DURABLE
+// ledger so the Live tab can replay the last session even after the ephemeral
+// SSE stream is gone (container restart, study done/idle). Pure + null-guarded.
+// ---------------------------------------------------------------------------
+
+/** The visual/semantic class of a transcript line — drives the icon + tone. */
+export type TranscriptKind =
+  | 'profile'
+  | 'hypotheses'
+  | 'run'
+  | 'critique'
+  | 'leakage'
+  | 'decision'
+  | 'promote'
+  | 'feedback'
+  | 'report'
+
+/** One reconstructed activity line. `detail` is an optional second-line gloss. */
+export type TranscriptEntry = {
+  id: string
+  /** ISO `created_at` of the source entity, or undefined when it had none. */
+  ts?: string
+  kind: TranscriptKind
+  label: string
+  detail?: string
+}
+
+/** Truncate a free-text reason/finding to a single readable clause. */
+function clip(text: string | undefined, max = 120): string | undefined {
+  if (!text) return undefined
+  const t = text.replace(/\s+/g, ' ').trim()
+  if (!t) return undefined
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t
+}
+
+/** Detect generated contracts hanging off the dataset version (see ContractCard). */
+function hasContracts(dataset: StudyDetail['dataset_version']): boolean {
+  return Boolean((dataset as { contracts?: unknown } | undefined)?.contracts)
+}
+
+/** The readable model name for a run: explicit `params.model`, else hypothesis family. */
+function runModelName(run: Run, hypotheses: Hypothesis[]): string {
+  const model = run.params?.model
+  if (typeof model === 'string' && model.trim()) return model
+  const family = hypotheses.find((h) => h.id === run.hypothesis_id)?.model_family
+  if (typeof family === 'string' && family.trim()) return family
+  return 'experiment'
+}
+
+/**
+ * Reconstruct the last agent session as one chronological transcript from the
+ * durable ledger. Every line is derived from a timestamped entity, so the order
+ * is the real session order; entities without a timestamp keep array order
+ * (appended after the timestamped block, via `byCreatedAt`).
+ *
+ * Mapping (intentionally NOT one line per hypothesis — those are grouped):
+ *   dataset_version → "Profiled dataset" (+ rows / "generated data contract")
+ *   hypotheses[]    → ONE "Proposed N hypotheses" (+ model families)
+ *   run             → "Launched {model} → {status}" (+ primary metric)
+ *   critique        → "Critique · {KIND}" with the finding (leakage prominent)
+ *   decision        → "{action} {short run}" with a truncated reason
+ *   feedback        → "Human feedback: …" (+ "constraints updated")
+ *   report artifact → "Wrote model card"
+ */
+export function buildSessionTranscript(detail: StudyDetail | undefined): TranscriptEntry[] {
+  if (!detail) return []
+  const hypotheses = detail.hypotheses ?? []
+  const entries: TranscriptEntry[] = []
+
+  // 1. Dataset profiled / data contract generated.
+  const dv = detail.dataset_version
+  if (dv) {
+    const bits: string[] = []
+    if (typeof dv.row_count === 'number' && Number.isFinite(dv.row_count)) {
+      bits.push(`${dv.row_count.toLocaleString()} rows`)
+    }
+    if (hasContracts(dv)) bits.push('generated data contract')
+    entries.push({
+      id: `profile-${dv.id}`,
+      ts: dv.created_at,
+      kind: 'profile',
+      label: 'Profiled dataset',
+      detail: bits.length ? bits.join(' · ') : undefined,
+    })
+  }
+
+  // 2. Hypotheses — ONE grouped entry (don't spam one line each).
+  if (hypotheses.length > 0) {
+    const ordered = byCreatedAt(hypotheses)
+    const families = [
+      ...new Set(
+        ordered
+          .map((h) => h.model_family)
+          .filter((f): f is string => typeof f === 'string' && f.trim().length > 0),
+      ),
+    ]
+    entries.push({
+      // Anchor the grouped entry at the FIRST hypothesis's timestamp so it lands
+      // where the agent actually proposed them in the session order.
+      id: 'hypotheses',
+      ts: ordered[0]?.created_at,
+      kind: 'hypotheses',
+      label: `Proposed ${ordered.length} ${ordered.length === 1 ? 'hypothesis' : 'hypotheses'}`,
+      detail: families.length ? families.join(', ') : undefined,
+    })
+  }
+
+  // 3. Runs — one per launched experiment, with its primary metric.
+  const metricKey = primaryMetricKey(detail.study)
+  for (const run of detail.runs ?? []) {
+    const model = runModelName(run, hypotheses)
+    const primary = pickPrimaryMetric(run, metricKey)
+    const detailParts: string[] = []
+    if (primary) detailParts.push(`${metricLabel(primary.key)} ${formatMetricValue(primary.value)}`)
+    entries.push({
+      id: `run-${run.id}`,
+      ts: run.created_at,
+      kind: 'run',
+      label: `Launched ${model} → ${run.status}`,
+      detail: detailParts.length ? detailParts.join(' · ') : undefined,
+    })
+  }
+
+  // 4. Critiques — leakage / test-set tuning surfaced prominently.
+  for (const crit of detail.critiques ?? []) {
+    const kind: TranscriptKind = crit.kind === 'leakage' ? 'leakage' : 'critique'
+    entries.push({
+      id: `critique-${crit.id}`,
+      ts: crit.created_at,
+      kind,
+      label: `Critique · ${CRITIQUE_LABEL[crit.kind] ?? crit.kind.toUpperCase()}`,
+      detail: clip(crit.finding),
+    })
+  }
+
+  // 5. Decisions — promote stands out (success); the rest are neutral.
+  for (const dec of detail.decisions ?? []) {
+    const runId = dec.promoted_run_id ?? dec.rejected_run_id
+    const verb = dec.action.charAt(0).toUpperCase() + dec.action.slice(1)
+    const subject = runId ? ` ${shortId(runId)}` : ''
+    entries.push({
+      id: `decision-${dec.id}`,
+      ts: dec.created_at,
+      kind: dec.action === 'promote' ? 'promote' : 'decision',
+      label: `${verb}${subject}`,
+      detail: clip(dec.reason),
+    })
+  }
+
+  // 6. Human feedback / notes — the steering that shaped later experiments.
+  for (const fb of detail.feedback ?? []) {
+    if (fb.type !== 'human_feedback' && fb.type !== 'note') continue
+    const changed =
+      fb.parsed_constraints != null && Object.keys(fb.parsed_constraints).length > 0
+    entries.push({
+      id: `feedback-${fb.id ?? clip(fb.content, 16) ?? 'fb'}`,
+      ts: fb.created_at,
+      kind: 'feedback',
+      label: `Human feedback: ${clip(fb.content, 100) ?? '(note)'}`,
+      detail: changed ? 'constraints updated' : undefined,
+    })
+  }
+
+  // 7. Report artifact — the model card the agent wrote.
+  for (const art of detail.artifacts ?? []) {
+    if (art.kind !== 'report') continue
+    entries.push({
+      id: `report-${art.id}`,
+      ts: art.created_at,
+      kind: 'report',
+      label: 'Wrote model card',
+      detail: clip(
+        typeof art.meta?.reproducible_command === 'string' ? art.meta.reproducible_command : undefined,
+      ),
+    })
+  }
+
+  // Sort chronologically with the same stable `created_at` logic the ledger uses
+  // (entries key their clock as `ts`; mirror it to `created_at` for the sort).
+  return byCreatedAt(entries.map((e) => ({ ...e, created_at: e.ts }))).map(
+    ({ created_at: _drop, ...e }) => e,
+  )
+}
+
+/**
+ * The metric key used to pick a run's headline number from `run.metrics`. The
+ * study's recorded `metric` (e.g. "recall_at_fpr") is the key the runner writes,
+ * so it stays primary here; `constraints.primary_metric` (e.g. "recall") is the
+ * human-facing NAME shown in the header (see `headlineMetric`).
+ */
 export function primaryMetricKey(study: Study): string | undefined {
-  return study.metric || undefined
+  return study.metric || study.constraints?.primary_metric || undefined
+}
+
+/**
+ * The headline metric for the study header. `name` is what the human asked for
+ * (`constraints.primary_metric`, e.g. "recall"); `metric` is what the runner
+ * optimizes/records (`study.metric`, e.g. "recall_at_fpr"). When they differ we
+ * surface both so the 0.10-vs-0.20 / recall-vs-recall@fpr gap isn't hidden.
+ */
+export function headlineMetric(study: Study): { name?: string; metric?: string; differ: boolean } {
+  const name = study.constraints?.primary_metric || undefined
+  const metric = study.metric || undefined
+  return { name, metric, differ: Boolean(name && metric && name !== metric) }
 }
